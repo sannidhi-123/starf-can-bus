@@ -5,6 +5,12 @@
 *.parquet
 *.json
 *.pkl
+*.zip
+*.7z
+*.tar.gz
+*.txt
+car_hacking/
+raw_downloads/
 
 # Ignore generated plots / images
 *.png

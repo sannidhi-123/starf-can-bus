@@ -31,7 +31,7 @@ export function ConsoleLayout({ activeNav, children }: ConsoleLayoutProps) {
         <div className="mx-auto flex h-16 w-full max-w-[1440px] items-center justify-between px-6">
           <div className="flex items-center gap-8">
             <Link to="/" className="font-headline text-xl font-bold tracking-tighter text-primary">
-              IDS.Sentinel
+              STARF
             </Link>
             <div className="hidden gap-6 md:flex">
               <NavLink to="/" className={({ isActive }) => topLinkClass(activeNav !== 'security' && activeNav !== 'reports' && isActive)}>
@@ -72,8 +72,8 @@ export function ConsoleLayout({ activeNav, children }: ConsoleLayoutProps) {
 
       <aside className="fixed left-0 top-16 hidden h-[calc(100vh-64px)] w-64 flex-col gap-2 bg-surface-container-low p-4 lg:flex">
         <div className="mb-6 px-2">
-          <h2 className="font-headline text-lg font-bold text-primary">CAN Bus IDS</h2>
-          <p className="text-xs text-on-surface-variant opacity-70">Transformer-Based Automotive IDS</p>
+          <h2 className="font-headline text-lg font-bold text-primary">STARF</h2>
+          <p className="text-xs text-on-surface-variant opacity-70">Smart Traffic Anomaly Recognition Kit</p>
         </div>
 
         <nav className="flex-1 space-y-1">
@@ -125,8 +125,8 @@ export function ConsoleLayout({ activeNav, children }: ConsoleLayoutProps) {
       <footer className="mt-auto bg-surface-container-low lg:ml-64">
         <div className="mx-auto flex w-full max-w-[1440px] flex-col items-center justify-between gap-8 px-8 py-12 md:flex-row">
           <div className="mb-6 md:mb-0">
-            <span className="block font-headline text-lg font-bold text-primary">IDS.Sentinel</span>
-            <p className="mt-2 text-xs text-on-surface-variant">© 2026 IDS.Sentinel — Transformer-Based Automotive Cyber-Intelligence</p>
+            <span className="block font-headline text-lg font-bold text-primary">STARF</span>
+            <p className="mt-2 text-xs text-on-surface-variant">© 2026 STARF — Explainable Hybrid Anomaly Detection System for Intra-Vehicular CAN-Bus Networks</p>
           </div>
           <div className="flex gap-8">
             <Link className="text-xs text-on-surface-variant transition-colors hover:text-primary" to="/security">

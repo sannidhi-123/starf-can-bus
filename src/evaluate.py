@@ -1,705 +1,468 @@
-# pyright: reportMissingImports=false
-"""Model evaluation pipeline for CAN Bus IDS.
+"""Held-out Evaluation for CAN Bus IDS Pipeline.
 
-This script evaluates the trained DistilBERT anomaly detector by scoring:
-- 3000 normal sequences from sequences.pt
-- 3000 attack sequences built from attack_traffic.csv
+Evaluates three configurations on the chronological 80/20 held-out test block
+from data/prepared.parquet (last 20% of each class in timestamp order):
+  1. Rules only (any rule fired = attack)
+  2. ML only (Random Forest on all frames, no rules)
+  3. Hybrid (rules first, then ML classification)
 
-Outputs under reports/:
-- confusion_matrix.png (dark-themed)
-- roc_curve.png
-- pr_curve.png
-- score_distribution.png
-- metrics_summary.png
-- model_evaluation_report.pdf
+Outputs:
+  - reports/hybrid_evaluation.json
+  - reports/hybrid_evaluation.md
 """
 
 from __future__ import annotations
 
-import gc
 import json
-from datetime import datetime
+import sys
+import time
 from pathlib import Path
-from typing import Dict, Iterable, List, Tuple
+from typing import Any, Dict, List
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 import numpy as np
 import pandas as pd
-import seaborn as sns
-import torch
-import torch.nn.functional as F
-from matplotlib import pyplot as plt
-from reportlab.lib import colors  # pyright: ignore[reportMissingImports]
-from reportlab.lib.pagesizes import A4  # pyright: ignore[reportMissingImports]
-from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet  # pyright: ignore[reportMissingImports]
-from reportlab.lib.units import inch  # pyright: ignore[reportMissingImports]
-from reportlab.platypus import Image, PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle  # pyright: ignore[reportMissingImports]
-from sklearn.metrics import (
-    accuracy_score,
-    average_precision_score,
-    classification_report,
-    confusion_matrix,
-    f1_score,
-    precision_recall_curve,
-    precision_score,
-    recall_score,
-    roc_auc_score,
-    roc_curve,
-)
-from torch.utils.data import DataLoader, TensorDataset
-from tqdm import tqdm
-from transformers import DistilBertConfig, DistilBertForMaskedLM
-
-
-BASE_DIR = Path(__file__).resolve().parent.parent
-DATA_DIR = BASE_DIR / "data"
-MODELS_DIR = BASE_DIR / "models"
-REPORTS_DIR = BASE_DIR / "reports"
-
-VOCAB_PATH = DATA_DIR / "vocab.json"
-SEQUENCES_PATH = DATA_DIR / "sequences.pt"
-ATTACK_CSV_PATH = DATA_DIR / "attack_traffic.csv"
-MODEL_PATH = MODELS_DIR / "best_model.pt"
-THRESHOLD_PATH = MODELS_DIR / "threshold.json"
-
-WINDOW_SIZE = 64
-MASK_RATIO = 0.15
-BATCH_SIZE = 128
-NUM_NORMAL = 3000
-NUM_ATTACK = 3000
-
-PAD_ID = 0
-MASK_ID = 1
-UNK_ID = 2
-
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-
-def seed_everything(seed: int = 42) -> None:
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-
-
-def ensure_exists(path: Path, description: str) -> None:
-    if not path.exists():
-        raise FileNotFoundError(f"Missing {description}: {path}")
-
-
-def load_json(path: Path) -> Dict:
-    with path.open("r", encoding="utf-8") as f:
-        return json.load(f)
-
-
-def load_vocab(path: Path) -> Dict[str, int]:
-    ensure_exists(path, "vocabulary file")
-    vocab = load_json(path)
-    if not isinstance(vocab, dict):
-        raise ValueError("vocab.json must contain an object mapping token->id")
-    return {str(k).lower(): int(v) for k, v in vocab.items()}
-
-
-def build_model(vocab_size: int) -> DistilBertForMaskedLM:
-    config = DistilBertConfig(
-        vocab_size=vocab_size,
-        max_position_embeddings=WINDOW_SIZE,
-        dim=256,
-        n_layers=4,
-        n_heads=4,
-        hidden_dim=1024,
-        dropout=0.1,
-        attention_dropout=0.1,
-        pad_token_id=PAD_ID,
-    )
-    return DistilBertForMaskedLM(config)
-
-
-def load_model(path: Path, vocab_size: int) -> Tuple[DistilBertForMaskedLM, Dict]:
-    ensure_exists(path, "model checkpoint")
-    checkpoint = torch.load(path, map_location=DEVICE, weights_only=False)
-
-    model = build_model(vocab_size)
-    state_dict = checkpoint.get("model_state")
-    if state_dict is None:
-        raise KeyError("Checkpoint does not contain 'model_state'")
-
-    model.load_state_dict(state_dict)
-    model.to(DEVICE)
-    model.eval()
-    return model, checkpoint
-
-
-def load_threshold(path: Path) -> Dict[str, float]:
-    ensure_exists(path, "threshold.json")
-    data = load_json(path)
-    if "threshold" not in data:
-        raise KeyError("threshold.json must contain 'threshold'")
-    return data
-
-
-def normalize_can_id(raw: str) -> str:
-    token = str(raw).strip().lower()
-    if token.startswith("0x"):
-        token = token[2:]
-    return token.zfill(4)
-
-
-def extract_id_series(df_chunk: pd.DataFrame) -> Iterable[str]:
-    if "ID" in df_chunk.columns:
-        return df_chunk["ID"].astype(str)
-    if len(df_chunk.columns) > 1:
-        return df_chunk.iloc[:, 1].astype(str)
-    return df_chunk.iloc[:, 0].astype(str)
-
-
-def load_normal_sequences(path: Path, sample_size: int) -> torch.Tensor:
-    ensure_exists(path, "normal sequence tensor")
-    payload = torch.load(path, map_location="cpu", weights_only=False)
-
-    if isinstance(payload, torch.Tensor):
-        sequences = payload
-    elif isinstance(payload, dict) and "sequences" in payload:
-        sequences = payload["sequences"]
-    else:
-        raise ValueError("Unsupported sequences.pt format. Expected Tensor or dict with 'sequences'.")
-
-    if not isinstance(sequences, torch.Tensor):
-        raise TypeError("Loaded sequences are not a torch.Tensor")
-    if sequences.ndim != 2 or sequences.shape[1] != WINDOW_SIZE:
-        raise ValueError(f"Expected tensor shape (N, {WINDOW_SIZE}), got {tuple(sequences.shape)}")
-
-    total = sequences.shape[0]
-    if total < sample_size:
-        raise ValueError(f"Not enough normal sequences in sequences.pt: found {total}, need {sample_size}")
-
-    indices = torch.randperm(total)[:sample_size]
-    return sequences[indices].long()
-
-
-def build_attack_sequences(path: Path, vocab: Dict[str, int], sample_size: int) -> torch.Tensor:
-    ensure_exists(path, "attack_traffic.csv")
-
-    col_names = [
-        "Timestamp", "ID", "DLC", "D0", "D1", "D2", "D3", "D4", "D5", "D6", "D7", "Flag"
-    ]
-
-    token_buffer: List[int] = []
-    sequences: List[List[int]] = []
-
-    reader = pd.read_csv(
-        path,
-        header=None,
-        names=col_names,
-        chunksize=100_000,
-        on_bad_lines="skip",
-        dtype=str,
-        low_memory=False,
-    )
-
-    for chunk in reader:
-        ids = extract_id_series(chunk)
-        for raw_id in ids:
-            can_id = normalize_can_id(raw_id)
-            token_buffer.append(vocab.get(can_id, UNK_ID))
-
-            if len(token_buffer) >= WINDOW_SIZE:
-                sequences.append(token_buffer[:WINDOW_SIZE])
-                token_buffer = token_buffer[WINDOW_SIZE:]
-
-            if len(sequences) >= sample_size:
-                break
-
-        if len(sequences) >= sample_size:
-            break
-
-    if len(sequences) < sample_size:
-        raise ValueError(
-            f"Not enough attack sequences generated from attack_traffic.csv. "
-            f"Generated {len(sequences)}, need {sample_size}."
-        )
-
-    return torch.tensor(sequences[:sample_size], dtype=torch.long)
-
-
-def _ensure_at_least_one_mask(masked_indices: torch.Tensor, special: torch.Tensor) -> torch.Tensor:
-    rows = torch.where(masked_indices.sum(dim=1) == 0)[0]
-    if rows.numel() == 0:
-        return masked_indices
-
-    for row in rows.tolist():
-        candidates = torch.where(~special[row])[0]
-        if candidates.numel() == 0:
-            candidates = torch.arange(masked_indices.shape[1], device=masked_indices.device)
-        pick = candidates[torch.randint(0, candidates.numel(), (1,), device=masked_indices.device)]
-        masked_indices[row, pick] = True
-
-    return masked_indices
-
-
-def score_batch(model: DistilBertForMaskedLM, batch: torch.Tensor) -> np.ndarray:
-    batch = batch.to(DEVICE)
-    bsz, seq_len = batch.shape
-
-    input_ids = batch.clone()
-    labels = torch.full((bsz, seq_len), -100, dtype=torch.long, device=DEVICE)
-
-    mask_prob = torch.rand((bsz, seq_len), device=DEVICE)
-    masked_indices = mask_prob < MASK_RATIO
-
-    special = (batch == PAD_ID) | (batch == MASK_ID) | (batch == UNK_ID)
-    masked_indices = masked_indices & ~special
-    masked_indices = _ensure_at_least_one_mask(masked_indices, special)
-
-    labels[masked_indices] = batch[masked_indices]
-    input_ids[masked_indices] = MASK_ID
-
-    attention_mask = torch.ones((bsz, seq_len), dtype=torch.long, device=DEVICE)
-
-    with torch.no_grad():
-        outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
-        logits = outputs.logits
-
-        loss_per_pos = F.cross_entropy(
-            logits.view(-1, logits.size(-1)),
-            labels.view(-1),
-            ignore_index=-100,
-            reduction="none",
-        ).view(bsz, seq_len)
-
-        mask_counts = (labels != -100).sum(dim=1).clamp(min=1)
-        scores = loss_per_pos.sum(dim=1) / mask_counts
-
-    return scores.detach().cpu().numpy()
-
-
-def score_sequences(model: DistilBertForMaskedLM, sequences: torch.Tensor, batch_size: int) -> np.ndarray:
-    dataset = TensorDataset(sequences)
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
-
-    all_scores: List[np.ndarray] = []
-    for (batch,) in tqdm(loader, desc="Scoring", unit="batch"):
-        batch_scores = score_batch(model, batch)
-        all_scores.append(batch_scores)
-
-        del batch
-        gc.collect()
-
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-
-    return np.concatenate(all_scores, axis=0)
-
-
-def compute_metrics(y_true: np.ndarray, scores: np.ndarray, threshold: float) -> Dict:
-    y_pred = (scores > threshold).astype(np.int32)
-
-    cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
-    tn, fp, fn, tp = cm.ravel().tolist()
-
-    accuracy = accuracy_score(y_true, y_pred)
-    precision = precision_score(y_true, y_pred, zero_division=0)
-    recall = recall_score(y_true, y_pred, zero_division=0)
-    f1 = f1_score(y_true, y_pred, zero_division=0)
-    specificity = (tn / (tn + fp)) if (tn + fp) else 0.0
-
-    fpr_curve, tpr_curve, _ = roc_curve(y_true, scores)
-    precision_curve, recall_curve, _ = precision_recall_curve(y_true, scores)
-
-    auc_score = roc_auc_score(y_true, scores)
-    ap_score = average_precision_score(y_true, scores)
-
-    report_text = classification_report(
-        y_true,
-        y_pred,
-        labels=[0, 1],
-        target_names=["Normal", "Attack"],
-        digits=4,
-        zero_division=0,
-    )
+from sklearn.metrics import confusion_matrix
+
+from backend.config import settings
+from src.pipeline import HybridPipeline
+
+# ---------------------------------------------------------------------------
+# Configuration & Paths
+# ---------------------------------------------------------------------------
+PROJECT_ROOT = settings.PROJECT_ROOT
+DATA_PATH = PROJECT_ROOT / "data" / "prepared.parquet"
+REPORTS_DIR = PROJECT_ROOT / "reports"
+JSON_OUTPUT_PATH = REPORTS_DIR / "hybrid_evaluation.json"
+MD_OUTPUT_PATH = REPORTS_DIR / "hybrid_evaluation.md"
+
+CLASS_LABELS = ["Normal", "DoS", "Fuzzy", "Spoof_Gear", "Spoof_RPM"]
+ATTACK_CLASSES = ["DoS", "Fuzzy", "Spoof_Gear", "Spoof_RPM"]
+MAX_TEST_PER_CLASS = 20000  # Cap per class to keep evaluation fast & deterministic
+TEST_SPLIT_RATIO = 0.20     # Same chronological 80/20 split as src/train_multiclass.py
+
+
+def compute_binary_metrics(y_true_bin: List[int], y_pred_bin: List[int]) -> Dict[str, float]:
+    """Compute binary intrusion detection metrics (0: Normal, 1: Attack)."""
+    cm = confusion_matrix(y_true_bin, y_pred_bin, labels=[0, 1])
+    tn, fp, fn, tp = cm.ravel()
+    prec = float(tp / (tp + fp)) if (tp + fp) > 0 else 0.0
+    rec = float(tp / (tp + fn)) if (tp + fn) > 0 else 0.0
+    f1 = float(2 * prec * rec / (prec + rec)) if (prec + rec) > 0 else 0.0
+    fpr = float(fp / (fp + tn)) if (fp + tn) > 0 else 0.0
 
     return {
-        "y_pred": y_pred,
-        "cm": cm,
-        "tn": tn,
-        "fp": fp,
-        "fn": fn,
-        "tp": tp,
-        "accuracy": float(accuracy),
-        "precision": float(precision),
-        "recall": float(recall),
-        "f1": float(f1),
-        "specificity": float(specificity),
-        "auc": float(auc_score),
-        "ap": float(ap_score),
-        "fpr_curve": fpr_curve,
-        "tpr_curve": tpr_curve,
-        "precision_curve": precision_curve,
-        "recall_curve": recall_curve,
-        "report_text": report_text,
+        "precision": round(prec, 5),
+        "recall": round(rec, 5),
+        "f1": round(f1, 5),
+        "fpr": round(fpr, 5),
+        "tp": int(tp),
+        "fp": int(fp),
+        "tn": int(tn),
+        "fn": int(fn),
     }
 
 
-def save_confusion_matrix(cm: np.ndarray, out_path: Path) -> None:
-    fig, ax = plt.subplots(figsize=(8, 6), facecolor="#0f172a")
-    ax.set_facecolor("#0f172a")
-
-    sns.heatmap(
-        cm,
-        annot=True,
-        fmt="d",
-        cmap="Blues",
-        cbar=True,
-        xticklabels=["Pred Normal", "Pred Attack"],
-        yticklabels=["True Normal", "True Attack"],
-        annot_kws={"color": "#e5e7eb", "fontsize": 14, "fontweight": "bold"},
-        ax=ax,
-    )
-
-    ax.set_title("Confusion Matrix", color="#f8fafc", fontsize=16, pad=12)
-    ax.tick_params(colors="#cbd5e1")
-    ax.set_xlabel("Predicted", color="#e2e8f0")
-    ax.set_ylabel("Actual", color="#e2e8f0")
-
-    plt.tight_layout()
-    plt.savefig(out_path, dpi=220, facecolor=fig.get_facecolor())
-    plt.close(fig)
+CONFUSION_OUTCOMES = ["Normal", "Rule violation", "DoS", "Fuzzy", "Spoof_Gear", "Spoof_RPM"]
 
 
-def save_roc_curve(fpr: np.ndarray, tpr: np.ndarray, auc_score: float, out_path: Path) -> None:
-    fig, ax = plt.subplots(figsize=(8, 6))
-    ax.plot(fpr, tpr, color="#2563eb", linewidth=2.5, label=f"ROC (AUC={auc_score:.4f})")
-    ax.plot([0, 1], [0, 1], linestyle="--", color="#9ca3af", linewidth=1.5)
-    ax.set_title("ROC Curve", fontsize=15)
-    ax.set_xlabel("False Positive Rate")
-    ax.set_ylabel("True Positive Rate")
-    ax.grid(alpha=0.25)
-    ax.legend(loc="lower right")
-    plt.tight_layout()
-    plt.savefig(out_path, dpi=220)
-    plt.close(fig)
+def compute_confusion_matrix(y_true: List[str], y_pred: List[str]) -> Dict[str, Dict[str, int]]:
+    """Compute confusion matrix with true class as rows and predicted outcome as columns."""
+    cm: Dict[str, Dict[str, int]] = {}
+    for true_cls in CLASS_LABELS:
+        cm[true_cls] = {col: 0 for col in CONFUSION_OUTCOMES}
+        indices = [i for i, y in enumerate(y_true) if y == true_cls]
+        for i in indices:
+            pred = y_pred[i]
+            if pred in cm[true_cls]:
+                cm[true_cls][pred] += 1
+            else:
+                pass
+    return cm
 
 
-def save_pr_curve(recall: np.ndarray, precision: np.ndarray, ap_score: float, out_path: Path) -> None:
-    fig, ax = plt.subplots(figsize=(8, 6))
-    ax.plot(recall, precision, color="#0f766e", linewidth=2.5, label=f"PR (AP={ap_score:.4f})")
-    ax.set_title("Precision-Recall Curve", fontsize=15)
-    ax.set_xlabel("Recall")
-    ax.set_ylabel("Precision")
-    ax.grid(alpha=0.25)
-    ax.legend(loc="lower left")
-    plt.tight_layout()
-    plt.savefig(out_path, dpi=220)
-    plt.close(fig)
+def format_confusion_matrix_md(cm: Dict[str, Dict[str, int]]) -> str:
+    """Format 5x6 confusion matrix as a markdown table."""
+    header = "| True Class | " + " | ".join(CONFUSION_OUTCOMES) + " | Total |"
+    divider = "|:---| " + " | ".join(["---:"] * len(CONFUSION_OUTCOMES)) + " | ---:|"
+    rows = [header, divider]
+    for true_cls in CLASS_LABELS:
+        counts = [f"{cm[true_cls][col]:,}" for col in CONFUSION_OUTCOMES]
+        total = f"{sum(cm[true_cls].values()):,}"
+        rows.append(f"| **{true_cls}** | " + " | ".join(counts) + f" | {total} |")
+    return "\n".join(rows)
 
 
-def save_score_distribution(normal_scores: np.ndarray, attack_scores: np.ndarray, threshold: float, out_path: Path) -> None:
-    fig, ax = plt.subplots(figsize=(10, 6))
-    ax.hist(normal_scores, bins=45, alpha=0.7, color="#2563eb", label="Normal", density=True)
-    ax.hist(attack_scores, bins=45, alpha=0.65, color="#dc2626", label="Attack", density=True)
-    ax.axvline(threshold, color="#f97316", linestyle="--", linewidth=2.2, label=f"Threshold={threshold:.4f}")
-    ax.set_title("Anomaly Score Distribution", fontsize=15)
-    ax.set_xlabel("Anomaly Score")
-    ax.set_ylabel("Density")
-    ax.grid(alpha=0.22)
-    ax.legend()
-    plt.tight_layout()
-    plt.savefig(out_path, dpi=220)
-    plt.close(fig)
+def evaluate() -> Dict[str, Any]:
+    print("=" * 70)
+    print("  CAN BUS IDS — HELD-OUT CHRONOLOGICAL EVALUATION")
+    print("=" * 70)
 
+    if not DATA_PATH.exists():
+        raise FileNotFoundError(f"Prepared dataset not found at: {DATA_PATH}")
 
-def save_metrics_summary(metrics: Dict[str, float], out_path: Path) -> None:
-    labels = ["Accuracy", "Precision", "Recall", "F1", "Specificity", "AUC", "AP"]
-    values = [
-        metrics["accuracy"],
-        metrics["precision"],
-        metrics["recall"],
-        metrics["f1"],
-        metrics["specificity"],
-        metrics["auc"],
-        metrics["ap"],
-    ]
+    t_start = time.time()
+    print(f"\n1. Loading prepared dataset from {DATA_PATH}...")
+    df = pd.read_parquet(DATA_PATH)
+    print(f"   Total dataset size: {len(df):,} frames")
 
-    colors_list = ["#1d4ed8", "#2563eb", "#0f766e", "#16a34a", "#4f46e5", "#dc2626", "#f59e0b"]
+    # Verify expected classes
+    present_classes = sorted(df["label"].unique())
+    print(f"   Classes present: {present_classes}")
+    for cls in CLASS_LABELS:
+        if cls not in present_classes:
+            raise ValueError(f"Required class '{cls}' missing from dataset!")
 
-    fig, ax = plt.subplots(figsize=(9, 5.8))
-    y = np.arange(len(labels))
-    bars = ax.barh(y, values, color=colors_list, alpha=0.9)
+    print(f"\n2. Applying chronological 80/20 held-out split per class:")
+    print(f"   Per-class test cap: up to {MAX_TEST_PER_CLASS:,} contiguous frames")
 
-    ax.set_yticks(y)
-    ax.set_yticklabels(labels)
-    ax.set_xlim(0, 1.0)
-    ax.set_xlabel("Score")
-    ax.set_title("Metrics Summary", fontsize=15)
-    ax.grid(axis="x", alpha=0.2)
+    test_subsets: Dict[str, pd.DataFrame] = {}
+    for cls in CLASS_LABELS:
+        cls_df = df[df["label"] == cls].sort_values("timestamp").reset_index(drop=True)
+        split_idx = int(len(cls_df) * (1.0 - TEST_SPLIT_RATIO))
+        test_block = cls_df.iloc[split_idx:]
+        capped_block = test_block.iloc[:MAX_TEST_PER_CLASS].reset_index(drop=True)
+        test_subsets[cls] = capped_block
+        print(f"   - {cls:<12}: total={len(cls_df):>7,}, test_20%={len(test_block):>6,}, capped_eval={len(capped_block):>6,}")
 
-    for idx, bar in enumerate(bars):
-        ax.text(values[idx] + 0.01, bar.get_y() + bar.get_height() / 2, f"{values[idx]:.4f}", va="center")
+    total_eval_frames = sum(len(s) for s in test_subsets.values())
+    print(f"   Total evaluation frames across 5 classes: {total_eval_frames:,}")
 
-    plt.tight_layout()
-    plt.savefig(out_path, dpi=220)
-    plt.close(fig)
+    # Load HybridPipeline
+    print("\n3. Initializing HybridPipeline (loading model and rules_config.json)...")
+    pipeline = HybridPipeline()
+    feature_names = pipeline.feature_names
+    print(f"   Features ({len(feature_names)}): {feature_names}")
+    print(f"   Rules whitelist size: {len(pipeline.whitelist)} CAN IDs")
 
+    # Containers for results
+    class_eval: Dict[str, Dict[str, Any]] = {}
 
-def _summary_conclusion(metrics: Dict[str, float], threshold: float) -> str:
-    quality = "strong"
-    if metrics["f1"] < 0.8 or metrics["auc"] < 0.85:
-        quality = "moderate"
-    if metrics["f1"] < 0.65 or metrics["auc"] < 0.75:
-        quality = "limited"
+    y_true_all: List[str] = []
+    rules_pred_bin_all: List[int] = []
+    rules_pred_cls_all: List[str] = []
+    ml_pred_bin_all: List[int] = []
+    ml_pred_cls_all: List[str] = []
+    hybrid_pred_bin_all: List[int] = []
+    hybrid_pred_cls_all: List[str] = []
+    hybrid_stage_all: List[str] = []
 
-    return (
-        f"The DistilBERT-based CAN IDS demonstrates {quality} detection performance under the "
-        f"selected threshold ({threshold:.4f}). The anomaly score distributions indicate separation "
-        "between normal and attack traffic, while ROC and PR trends confirm ranking quality for "
-        "attack detection. Threshold calibration and periodic retraining are recommended for long-term "
-        "deployment stability as vehicle traffic profiles evolve."
-    )
+    print("\n4. Running sequential evaluation in timestamp order per class...")
 
+    for cls in CLASS_LABELS:
+        sub_df = test_subsets[cls]
+        n_frames = len(sub_df)
+        t_cls = time.time()
 
-def generate_pdf_report(
-    output_pdf: Path,
-    model_info: Dict[str, str],
-    metrics: Dict[str, float],
-    chart_paths: Dict[str, Path],
-) -> None:
-    doc = SimpleDocTemplate(str(output_pdf), pagesize=A4, title="CAN Bus IDS Model Evaluation")
-    styles = getSampleStyleSheet()
+        # Each class evaluated with fresh StreamState and fresh RuleEngine
+        state = pipeline.new_stream_state()
+        engine = pipeline.new_rule_state()
 
-    title_style = ParagraphStyle(
-        "TitleStyle",
-        parent=styles["Title"],
-        fontSize=26,
-        textColor=colors.HexColor("#0f172a"),
-        spaceAfter=14,
-        alignment=1,
-    )
-    subtitle_style = ParagraphStyle(
-        "SubtitleStyle",
-        parent=styles["Normal"],
-        fontSize=12,
-        textColor=colors.HexColor("#334155"),
-        alignment=1,
-        leading=18,
-    )
-    heading_style = ParagraphStyle(
-        "HeadingStyle",
-        parent=styles["Heading2"],
-        textColor=colors.HexColor("#0f172a"),
-        spaceAfter=8,
-    )
-    body_style = ParagraphStyle(
-        "BodyStyle",
-        parent=styles["BodyText"],
-        fontSize=10,
-        leading=15,
-        textColor=colors.HexColor("#1f2937"),
-    )
+        timestamps = sub_df["timestamp"].to_numpy(dtype=np.float64)
+        can_ids = sub_df["can_id"].to_numpy(dtype=np.int64)
+        dlcs = sub_df["dlc"].to_numpy(dtype=np.int64)
 
-    story: List = []
+        byte_cols = [f"d{i}" for i in range(8)]
+        raw_bytes = np.zeros((n_frames, 8), dtype=np.int64)
+        for i, c in enumerate(byte_cols):
+            raw_bytes[:, i] = [HybridPipeline._parse_byte_val(v) for v in sub_df[c]]
 
-    # Title page
-    story.append(Spacer(1, 1.8 * inch))
-    story.append(Paragraph("CAN Bus Intrusion Detection System", title_style))
-    story.append(Paragraph("Model Evaluation Report", title_style))
-    story.append(Spacer(1, 0.25 * inch))
-    story.append(
-        Paragraph(
-            f"Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}<br/>"
-            "Architecture: DistilBERT (4 layers, 4 heads, dim=256)",
-            subtitle_style,
+        rule_fired = np.zeros(n_frames, dtype=bool)
+        X = np.zeros((n_frames, len(feature_names)), dtype=np.float32)
+
+        for i in range(n_frames):
+            ts = timestamps[i]
+            cid = int(can_ids[i])
+            # 1. Rule check
+            trig = engine.process_frame(ts, cid)
+            rule_fired[i] = len(trig) > 0
+            # 2. State update & feature building
+            rep, iat = state.update(cid, ts)
+            X[i] = pipeline._build_feature_row(cid, rep, iat, dlcs[i], raw_bytes[i])
+
+        # Batch predict ML model
+        probs = pipeline._model.predict_proba(X)
+        top_indices = np.argmax(probs, axis=1)
+        ml_pred_classes = [pipeline._classes[idx] for idx in top_indices]
+
+        # Hybrid decisions
+        hybrid_stages = []
+        hybrid_bin = []
+        hybrid_cls = []
+
+        rules_bin = []
+        rules_cls = []
+        ml_bin = []
+
+        for i in range(n_frames):
+            is_rule_hit = rule_fired[i]
+            m_cls = ml_pred_classes[i]
+
+            # Rules only: any rule fired = attack (1), else normal (0)
+            rules_bin.append(1 if is_rule_hit else 0)
+            rules_cls.append("Rule violation" if is_rule_hit else "Normal")
+
+            # ML only: attack if ml_pred != Normal
+            ml_bin.append(1 if m_cls != "Normal" else 0)
+
+            # Hybrid: rules first, then ML
+            if is_rule_hit:
+                hybrid_stages.append("rule")
+                hybrid_bin.append(1)
+                hybrid_cls.append("Rule violation")
+            else:
+                hybrid_stages.append("ml")
+                hybrid_bin.append(1 if m_cls != "Normal" else 0)
+                hybrid_cls.append(m_cls)
+
+        # Store for global metrics
+        y_true_all.extend([cls] * n_frames)
+        rules_pred_bin_all.extend(rules_bin)
+        rules_pred_cls_all.extend(rules_cls)
+        ml_pred_bin_all.extend(ml_bin)
+        ml_pred_cls_all.extend(ml_pred_classes)
+        hybrid_pred_bin_all.extend(hybrid_bin)
+        hybrid_pred_cls_all.extend(hybrid_cls)
+        hybrid_stage_all.extend(hybrid_stages)
+
+        # Per-class summary counts
+        rule_hits_count = int(np.sum(rules_bin))
+        hybrid_rule_decisions = int(sum(1 for s in hybrid_stages if s == "rule"))
+        hybrid_ml_decisions = int(sum(1 for s in hybrid_stages if s == "ml"))
+        hybrid_attacks_detected = int(sum(hybrid_bin))
+        ml_attacks_detected = int(sum(ml_bin))
+
+        class_eval[cls] = {
+            "total_frames": n_frames,
+            "rules_only": {
+                "detected_attacks": rule_hits_count,
+                "detected_normal": n_frames - rule_hits_count,
+            },
+            "ml_only": {
+                "detected_attacks": ml_attacks_detected,
+                "detected_normal": n_frames - ml_attacks_detected,
+                "predicted_as_own_class": int(sum(1 for p in ml_pred_classes if p == cls)),
+            },
+            "hybrid": {
+                "decided_by_rule": hybrid_rule_decisions,
+                "decided_by_ml": hybrid_ml_decisions,
+                "detected_attacks": hybrid_attacks_detected,
+                "detected_normal": n_frames - hybrid_attacks_detected,
+            },
+        }
+
+        print(
+            f"   Processed {cls:<12} ({n_frames:,} frames in {time.time()-t_cls:.2f}s) | "
+            f"Rules={rule_hits_count:,} | ML={ml_attacks_detected:,} | Hybrid=(rule:{hybrid_rule_decisions:,}, ml:{hybrid_ml_decisions:,})"
         )
-    )
-    story.append(PageBreak())
 
-    # Model info table
-    story.append(Paragraph("Model Information", heading_style))
-    model_rows = [["Field", "Value"]] + [[k, str(v)] for k, v in model_info.items()]
-    model_table = Table(model_rows, colWidths=[2.2 * inch, 4.8 * inch])
-    model_table.setStyle(
-        TableStyle(
-            [
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0f172a")),
-                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-                ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
-                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                ("FONTNAME", (0, 1), (0, -1), "Helvetica-Bold"),
-                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                ("BACKGROUND", (0, 1), (-1, -1), colors.HexColor("#f8fafc")),
-                ("LEFTPADDING", (0, 0), (-1, -1), 8),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 8),
-                ("TOPPADDING", (0, 0), (-1, -1), 6),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-            ]
-        )
-    )
-    story.append(model_table)
-    story.append(Spacer(1, 0.3 * inch))
+    # -----------------------------------------------------------------------
+    # Binary Evaluation (Normal vs Any Attack)
+    # -----------------------------------------------------------------------
+    y_true_bin_all = [0 if y == "Normal" else 1 for y in y_true_all]
 
-    # Metrics table
-    story.append(Paragraph("Evaluation Metrics", heading_style))
-    metric_rows = [
-        ["Metric", "Value"],
-        ["Accuracy", f"{metrics['accuracy']:.4f}"],
-        ["Precision", f"{metrics['precision']:.4f}"],
-        ["Recall", f"{metrics['recall']:.4f}"],
-        ["F1", f"{metrics['f1']:.4f}"],
-        ["Specificity", f"{metrics['specificity']:.4f}"],
-        ["AUC", f"{metrics['auc']:.4f}"],
-        ["AP", f"{metrics['ap']:.4f}"],
-    ]
-    metric_table = Table(metric_rows, colWidths=[2.2 * inch, 2.1 * inch])
-    metric_table.setStyle(
-        TableStyle(
-            [
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1d4ed8")),
-                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-                ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
-                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                ("BACKGROUND", (0, 1), (-1, -1), colors.HexColor("#eff6ff")),
-                ("ALIGN", (1, 1), (1, -1), "RIGHT"),
-                ("LEFTPADDING", (0, 0), (-1, -1), 8),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 8),
-                ("TOPPADDING", (0, 0), (-1, -1), 6),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-            ]
-        )
-    )
-    story.append(metric_table)
-    story.append(PageBreak())
-
-    chart_titles = [
-        ("Confusion Matrix", "confusion_matrix"),
-        ("ROC Curve", "roc_curve"),
-        ("Precision-Recall Curve", "pr_curve"),
-        ("Score Distribution", "score_distribution"),
-        ("Metrics Summary", "metrics_summary"),
-    ]
-
-    for idx, (title, key) in enumerate(chart_titles):
-        story.append(Paragraph(title, heading_style))
-        chart_path = chart_paths[key]
-        story.append(Image(str(chart_path), width=6.7 * inch, height=4.1 * inch))
-        if idx != len(chart_titles) - 1:
-            story.append(PageBreak())
-
-    story.append(PageBreak())
-    story.append(Paragraph("Summary Conclusion", heading_style))
-    story.append(Paragraph(_summary_conclusion(metrics, float(model_info["Threshold"])), body_style))
-
-    doc.build(story)
-
-
-def main() -> None:
-    seed_everything(42)
-    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-
-    print("=" * 76)
-    print("CAN Bus IDS - Model Evaluation")
-    print("=" * 76)
-    print(f"Device: {DEVICE}")
-
-    vocab = load_vocab(VOCAB_PATH)
-    threshold_data = load_threshold(THRESHOLD_PATH)
-    threshold = float(threshold_data["threshold"])
-
-    model, checkpoint = load_model(MODEL_PATH, vocab_size=len(vocab))
-
-    print("Loading normal and attack samples...")
-    normal_sequences = load_normal_sequences(SEQUENCES_PATH, NUM_NORMAL)
-    attack_sequences = build_attack_sequences(ATTACK_CSV_PATH, vocab, NUM_ATTACK)
-
-    print(f"Normal sample shape: {tuple(normal_sequences.shape)}")
-    print(f"Attack sample shape: {tuple(attack_sequences.shape)}")
-
-    print("Scoring normal sequences...")
-    normal_scores = score_sequences(model, normal_sequences, BATCH_SIZE)
-
-    print("Scoring attack sequences...")
-    attack_scores = score_sequences(model, attack_sequences, BATCH_SIZE)
-
-    all_scores = np.concatenate([normal_scores, attack_scores])
-    y_true = np.concatenate([
-        np.zeros(len(normal_scores), dtype=np.int32),
-        np.ones(len(attack_scores), dtype=np.int32),
-    ])
-
-    metrics = compute_metrics(y_true=y_true, scores=all_scores, threshold=threshold)
-
-    print("\nClassification Report")
-    print("-" * 76)
-    print(metrics["report_text"])
-    print("-" * 76)
-    print(
-        "Exact metrics: "
-        f"Accuracy={metrics['accuracy']:.6f}, "
-        f"Precision={metrics['precision']:.6f}, "
-        f"Recall={metrics['recall']:.6f}, "
-        f"F1={metrics['f1']:.6f}, "
-        f"Specificity={metrics['specificity']:.6f}, "
-        f"AUC={metrics['auc']:.6f}, "
-        f"AP={metrics['ap']:.6f}"
-    )
-
-    chart_paths = {
-        "confusion_matrix": REPORTS_DIR / "confusion_matrix.png",
-        "roc_curve": REPORTS_DIR / "roc_curve.png",
-        "pr_curve": REPORTS_DIR / "pr_curve.png",
-        "score_distribution": REPORTS_DIR / "score_distribution.png",
-        "metrics_summary": REPORTS_DIR / "metrics_summary.png",
+    binary_metrics = {
+        "rules_only": compute_binary_metrics(y_true_bin_all, rules_pred_bin_all),
+        "ml_only": compute_binary_metrics(y_true_bin_all, ml_pred_bin_all),
+        "hybrid": compute_binary_metrics(y_true_bin_all, hybrid_pred_bin_all),
     }
 
-    save_confusion_matrix(metrics["cm"], chart_paths["confusion_matrix"])
-    save_roc_curve(metrics["fpr_curve"], metrics["tpr_curve"], metrics["auc"], chart_paths["roc_curve"])
-    save_pr_curve(metrics["recall_curve"], metrics["precision_curve"], metrics["ap"], chart_paths["pr_curve"])
-    save_score_distribution(normal_scores, attack_scores, threshold, chart_paths["score_distribution"])
-    save_metrics_summary(metrics, chart_paths["metrics_summary"])
+    # -----------------------------------------------------------------------
+    # Per-Class Detection Rate (Any Attack)
+    # -----------------------------------------------------------------------
+    def get_per_class_table(pred_bin: List[int]) -> Dict[str, Dict[str, float]]:
+        res = {}
+        normal_idx = [i for i, y in enumerate(y_true_all) if y == "Normal"]
+        attack_idx = [i for i, y in enumerate(y_true_all) if y != "Normal"]
 
-    model_info = {
-        "Project": "CAN Bus Intrusion Detection System",
-        "Architecture": "DistilBERT (4 layers, 4 heads, dim=256)",
-        "Checkpoint Epoch": str(checkpoint.get("epoch", "N/A")),
-        "Validation Loss": f"{float(checkpoint.get('val_loss', float('nan'))):.6f}",
-        "Threshold": f"{threshold:.6f}",
-        "Threshold Percentile": str(threshold_data.get("percentile", "N/A")),
-        "Masking Ratio": f"{MASK_RATIO:.2f}",
-        "Normal Samples": str(NUM_NORMAL),
-        "Attack Samples": str(NUM_ATTACK),
-        "Device": str(DEVICE),
+        # Normal class
+        # Positive = Normal (0 in bin), Negative = Attack (1 in bin)
+        normal_tp = sum(1 for i in normal_idx if pred_bin[i] == 0)
+        normal_fp = sum(1 for i in attack_idx if pred_bin[i] == 0)
+        normal_fn = sum(1 for i in normal_idx if pred_bin[i] == 1)
+
+        norm_prec = normal_tp / (normal_tp + normal_fp) if (normal_tp + normal_fp) > 0 else 0.0
+        norm_rec = normal_tp / (normal_tp + normal_fn) if (normal_tp + normal_fn) > 0 else 0.0
+        norm_f1 = 2 * norm_prec * norm_rec / (norm_prec + norm_rec) if (norm_prec + norm_rec) > 0 else 0.0
+
+        res["Normal"] = {
+            "precision": round(norm_prec, 4),
+            "recall": round(norm_rec, 4),
+            "f1": round(norm_f1, 4),
+            "support": len(normal_idx),
+        }
+
+        # Normal false alarms
+        fp_norm = normal_fn
+
+        for atk in ATTACK_CLASSES:
+            atk_idx = [i for i, y in enumerate(y_true_all) if y == atk]
+            tp = sum(1 for i in atk_idx if pred_bin[i] == 1)
+            fn = sum(1 for i in atk_idx if pred_bin[i] == 0)
+            rec = tp / len(atk_idx) if len(atk_idx) > 0 else 0.0
+            prec = tp / (tp + fp_norm) if (tp + fp_norm) > 0 else 0.0
+            f1 = 2 * prec * rec / (prec + rec) if (prec + rec) > 0 else 0.0
+
+            res[atk] = {
+                "precision": round(prec, 4),
+                "recall": round(rec, 4),
+                "f1": round(f1, 4),
+                "support": len(atk_idx),
+            }
+
+        return res
+
+    per_class_metrics = {
+        "rules_only": get_per_class_table(rules_pred_bin_all),
+        "ml_only": get_per_class_table(ml_pred_bin_all),
+        "hybrid": get_per_class_table(hybrid_pred_bin_all),
     }
 
-    pdf_path = REPORTS_DIR / "model_evaluation_report.pdf"
-    generate_pdf_report(pdf_path, model_info, metrics, chart_paths)
+    # -----------------------------------------------------------------------
+    # Confusion Matrices (Rows: True Class, Columns: Predicted Outcome)
+    # Outcomes: Normal, Rule violation, DoS, Fuzzy, Spoof_Gear, Spoof_RPM
+    # -----------------------------------------------------------------------
+    cm_rules = compute_confusion_matrix(y_true_all, rules_pred_cls_all)
+    cm_ml = compute_confusion_matrix(y_true_all, ml_pred_cls_all)
+    cm_hybrid = compute_confusion_matrix(y_true_all, hybrid_pred_cls_all)
 
-    # Persist a frontend-friendly metrics file.
-    metrics_json_path = REPORTS_DIR / "metrics.json"
-    metrics_payload = {
-        "generated_at": datetime.now().isoformat(),
-        "threshold": threshold,
-        "threshold_info": threshold_data,
-        "samples": {"normal": NUM_NORMAL, "attack": NUM_ATTACK},
-        "metrics": {
-            "accuracy": metrics["accuracy"],
-            "precision": metrics["precision"],
-            "recall": metrics["recall"],
-            "f1": metrics["f1"],
-            "specificity": metrics["specificity"],
-            "auc": metrics["auc"],
-            "ap": metrics["ap"],
-            "tn": metrics["tn"],
-            "fp": metrics["fp"],
-            "fn": metrics["fn"],
-            "tp": metrics["tp"],
+    # -----------------------------------------------------------------------
+    # ML-Only Fine-Grained 5-Class Multiclass Metrics
+    # -----------------------------------------------------------------------
+    from sklearn.metrics import classification_report
+    ml_multiclass_report = classification_report(
+        y_true_all, ml_pred_cls_all, labels=CLASS_LABELS, output_dict=True, zero_division=0
+    )
+
+    # -----------------------------------------------------------------------
+    # Build Final JSON Summary
+    # -----------------------------------------------------------------------
+    output_summary = {
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "max_test_per_class": MAX_TEST_PER_CLASS,
+        "total_test_frames": total_eval_frames,
+        "class_breakdown": class_eval,
+        "binary_metrics": binary_metrics,
+        "per_class_detection_metrics": per_class_metrics,
+        "confusion_matrices": {
+            "rules_only": cm_rules,
+            "ml_only": cm_ml,
+            "hybrid": cm_hybrid,
+        },
+        "ml_fine_grained_multiclass": {
+            cls: {
+                "precision": round(ml_multiclass_report[cls]["precision"], 4),
+                "recall": round(ml_multiclass_report[cls]["recall"], 4),
+                "f1": round(ml_multiclass_report[cls]["f1-score"], 4),
+                "support": int(ml_multiclass_report[cls]["support"]),
+            }
+            for cls in CLASS_LABELS
         },
     }
-    with metrics_json_path.open("w", encoding="utf-8") as f:
-        json.dump(metrics_payload, f, indent=2)
 
-    print("\nSaved outputs:")
-    for key, value in chart_paths.items():
-        print(f"  {key}: {value}")
-    print(f"  pdf: {pdf_path}")
-    print(f"  metrics_json: {metrics_json_path}")
+    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    with JSON_OUTPUT_PATH.open("w", encoding="utf-8") as f:
+        json.dump(output_summary, f, indent=2)
+    print(f"\n[Saved] JSON results saved to: {JSON_OUTPUT_PATH}")
+
+    # -----------------------------------------------------------------------
+    # Build Markdown Report Table
+    # -----------------------------------------------------------------------
+    md_content = f"""# CAN Bus IDS — Held-Out Evaluation Report
+
+**Evaluation Date:** {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}  
+**Dataset:** `data/prepared.parquet`  
+**Evaluation Protocol:** Chronological 80/20 held-out test block per class (last 20% in timestamp order), contiguous stream processing with isolated state per class.  
+**Per-Class Evaluation Cap:** {MAX_TEST_PER_CLASS:,} frames (Total: {total_eval_frames:,} frames across 5 classes).  
+
+---
+
+## 1. Binary Detection Performance (Normal vs Any Attack)
+
+| Configuration | Precision | Recall | F1-Score | False Positive Rate (FPR) | True Positives (TP) | False Positives (FP) | False Negatives (FN) | True Negatives (TN) |
+|---|---|---|---|---|---|---|---|---|
+| **Rules Only** | {binary_metrics['rules_only']['precision']*100:.2f}% | {binary_metrics['rules_only']['recall']*100:.2f}% | {binary_metrics['rules_only']['f1']*100:.2f}% | {binary_metrics['rules_only']['fpr']*100:.2f}% | {binary_metrics['rules_only']['tp']:,} | {binary_metrics['rules_only']['fp']:,} | {binary_metrics['rules_only']['fn']:,} | {binary_metrics['rules_only']['tn']:,} |
+| **ML Only** | {binary_metrics['ml_only']['precision']*100:.2f}% | {binary_metrics['ml_only']['recall']*100:.2f}% | {binary_metrics['ml_only']['f1']*100:.2f}% | {binary_metrics['ml_only']['fpr']*100:.2f}% | {binary_metrics['ml_only']['tp']:,} | {binary_metrics['ml_only']['fp']:,} | {binary_metrics['ml_only']['fn']:,} | {binary_metrics['ml_only']['tn']:,} |
+| **Hybrid (Rules + ML)** | **{binary_metrics['hybrid']['precision']*100:.2f}%** | **{binary_metrics['hybrid']['recall']*100:.2f}%** | **{binary_metrics['hybrid']['f1']*100:.2f}%** | **{binary_metrics['hybrid']['fpr']*100:.2f}%** | **{binary_metrics['hybrid']['tp']:,}** | **{binary_metrics['hybrid']['fp']:,}** | **{binary_metrics['hybrid']['fn']:,}** | **{binary_metrics['hybrid']['tn']:,}** |
+
+---
+
+## 2. Per-Class Detection Rate (Any Attack)
+
+> **Note:** The rule stage does not assign attack types; all rule-stage hits are flagged as generic "Rule violation". Specific attack types (DoS, Fuzzy, Spoof_Gear, Spoof_RPM) are classified exclusively when unflagged frames reach the ML stage. The tables below evaluate detection rate for any attack versus Normal.
+
+### Configuration 1: Rules Only
+*Deterministic heuristics (INVALID_ID, FREQUENCY, TIMING) learned strictly from training Normal traffic.*
+
+#### Per-class detection rate (any attack)
+| Class | Support | Precision | Recall | F1-Score | Detected as Attack |
+|---|---|---|---|---|---|
+| **Normal** | {per_class_metrics['rules_only']['Normal']['support']:,} | {per_class_metrics['rules_only']['Normal']['precision']*100:.2f}% | {per_class_metrics['rules_only']['Normal']['recall']*100:.2f}% | {per_class_metrics['rules_only']['Normal']['f1']*100:.2f}% | {class_eval['Normal']['rules_only']['detected_attacks']:,} (FP) |
+| **DoS** | {per_class_metrics['rules_only']['DoS']['support']:,} | {per_class_metrics['rules_only']['DoS']['precision']*100:.2f}% | {per_class_metrics['rules_only']['DoS']['recall']*100:.2f}% | {per_class_metrics['rules_only']['DoS']['f1']*100:.2f}% | {class_eval['DoS']['rules_only']['detected_attacks']:,} |
+| **Fuzzy** | {per_class_metrics['rules_only']['Fuzzy']['support']:,} | {per_class_metrics['rules_only']['Fuzzy']['precision']*100:.2f}% | {per_class_metrics['rules_only']['Fuzzy']['recall']*100:.2f}% | {per_class_metrics['rules_only']['Fuzzy']['f1']*100:.2f}% | {class_eval['Fuzzy']['rules_only']['detected_attacks']:,} |
+| **Spoof_Gear** | {per_class_metrics['rules_only']['Spoof_Gear']['support']:,} | {per_class_metrics['rules_only']['Spoof_Gear']['precision']*100:.2f}% | {per_class_metrics['rules_only']['Spoof_Gear']['recall']*100:.2f}% | {per_class_metrics['rules_only']['Spoof_Gear']['f1']*100:.2f}% | {class_eval['Spoof_Gear']['rules_only']['detected_attacks']:,} |
+| **Spoof_RPM** | {per_class_metrics['rules_only']['Spoof_RPM']['support']:,} | {per_class_metrics['rules_only']['Spoof_RPM']['precision']*100:.2f}% | {per_class_metrics['rules_only']['Spoof_RPM']['recall']*100:.2f}% | {per_class_metrics['rules_only']['Spoof_RPM']['f1']*100:.2f}% | {class_eval['Spoof_RPM']['rules_only']['detected_attacks']:,} |
+
+#### Confusion Matrix (Rules Only)
+{format_confusion_matrix_md(cm_rules)}
+
+### Configuration 2: ML Only
+*Random Forest classifier evaluated directly on all frames without rule filtering.*
+
+#### Per-class detection rate (any attack)
+| Class | Support | Precision | Recall | F1-Score | Detected as Attack |
+|---|---|---|---|---|---|
+| **Normal** | {per_class_metrics['ml_only']['Normal']['support']:,} | {per_class_metrics['ml_only']['Normal']['precision']*100:.2f}% | {per_class_metrics['ml_only']['Normal']['recall']*100:.2f}% | {per_class_metrics['ml_only']['Normal']['f1']*100:.2f}% | {class_eval['Normal']['ml_only']['detected_attacks']:,} (FP) |
+| **DoS** | {per_class_metrics['ml_only']['DoS']['support']:,} | {per_class_metrics['ml_only']['DoS']['precision']*100:.2f}% | {per_class_metrics['ml_only']['DoS']['recall']*100:.2f}% | {per_class_metrics['ml_only']['DoS']['f1']*100:.2f}% | {class_eval['DoS']['ml_only']['detected_attacks']:,} |
+| **Fuzzy** | {per_class_metrics['ml_only']['Fuzzy']['support']:,} | {per_class_metrics['ml_only']['Fuzzy']['precision']*100:.2f}% | {per_class_metrics['ml_only']['Fuzzy']['recall']*100:.2f}% | {per_class_metrics['ml_only']['Fuzzy']['f1']*100:.2f}% | {class_eval['Fuzzy']['ml_only']['detected_attacks']:,} |
+| **Spoof_Gear** | {per_class_metrics['ml_only']['Spoof_Gear']['support']:,} | {per_class_metrics['ml_only']['Spoof_Gear']['precision']*100:.2f}% | {per_class_metrics['ml_only']['Spoof_Gear']['recall']*100:.2f}% | {per_class_metrics['ml_only']['Spoof_Gear']['f1']*100:.2f}% | {class_eval['Spoof_Gear']['ml_only']['detected_attacks']:,} |
+| **Spoof_RPM** | {per_class_metrics['ml_only']['Spoof_RPM']['support']:,} | {per_class_metrics['ml_only']['Spoof_RPM']['precision']*100:.2f}% | {per_class_metrics['ml_only']['Spoof_RPM']['recall']*100:.2f}% | {per_class_metrics['ml_only']['Spoof_RPM']['f1']*100:.2f}% | {class_eval['Spoof_RPM']['ml_only']['detected_attacks']:,} |
+
+#### Confusion Matrix (ML Only)
+{format_confusion_matrix_md(cm_ml)}
+
+### Configuration 3: Hybrid (Rules First, Then ML)
+*Deterministic rules catch rapid floods and unknown IDs instantly; unflagged frames are classified by Random Forest.*
+
+#### Per-class detection rate (any attack)
+| Class | Support | Precision | Recall | F1-Score | Decided by Rule | Decided by ML | Total Detected |
+|---|---|---|---|---|---|---|---|
+| **Normal** | {per_class_metrics['hybrid']['Normal']['support']:,} | {per_class_metrics['hybrid']['Normal']['precision']*100:.2f}% | {per_class_metrics['hybrid']['Normal']['recall']*100:.2f}% | {per_class_metrics['hybrid']['Normal']['f1']*100:.2f}% | {class_eval['Normal']['hybrid']['decided_by_rule']:,} | {class_eval['Normal']['hybrid']['decided_by_ml']:,} | {class_eval['Normal']['hybrid']['detected_normal']:,} (Normal) |
+| **DoS** | {per_class_metrics['hybrid']['DoS']['support']:,} | {per_class_metrics['hybrid']['DoS']['precision']*100:.2f}% | {per_class_metrics['hybrid']['DoS']['recall']*100:.2f}% | {per_class_metrics['hybrid']['DoS']['f1']*100:.2f}% | {class_eval['DoS']['hybrid']['decided_by_rule']:,} | {class_eval['DoS']['hybrid']['decided_by_ml']:,} | {class_eval['DoS']['hybrid']['detected_attacks']:,} (Attack) |
+| **Fuzzy** | {per_class_metrics['hybrid']['Fuzzy']['support']:,} | {per_class_metrics['hybrid']['Fuzzy']['precision']*100:.2f}% | {per_class_metrics['hybrid']['Fuzzy']['recall']*100:.2f}% | {per_class_metrics['hybrid']['Fuzzy']['f1']*100:.2f}% | {class_eval['Fuzzy']['hybrid']['decided_by_rule']:,} | {class_eval['Fuzzy']['hybrid']['decided_by_ml']:,} | {class_eval['Fuzzy']['hybrid']['detected_attacks']:,} (Attack) |
+| **Spoof_Gear** | {per_class_metrics['hybrid']['Spoof_Gear']['support']:,} | {per_class_metrics['hybrid']['Spoof_Gear']['precision']*100:.2f}% | {per_class_metrics['hybrid']['Spoof_Gear']['recall']*100:.2f}% | {per_class_metrics['hybrid']['Spoof_Gear']['f1']*100:.2f}% | {class_eval['Spoof_Gear']['hybrid']['decided_by_rule']:,} | {class_eval['Spoof_Gear']['hybrid']['decided_by_ml']:,} | {class_eval['Spoof_Gear']['hybrid']['detected_attacks']:,} (Attack) |
+| **Spoof_RPM** | {per_class_metrics['hybrid']['Spoof_RPM']['support']:,} | {per_class_metrics['hybrid']['Spoof_RPM']['precision']*100:.2f}% | {per_class_metrics['hybrid']['Spoof_RPM']['recall']*100:.2f}% | {per_class_metrics['hybrid']['Spoof_RPM']['f1']*100:.2f}% | {class_eval['Spoof_RPM']['hybrid']['decided_by_rule']:,} | {class_eval['Spoof_RPM']['hybrid']['decided_by_ml']:,} | {class_eval['Spoof_RPM']['hybrid']['detected_attacks']:,} (Attack) |
+
+#### Confusion Matrix (Hybrid)
+{format_confusion_matrix_md(cm_hybrid)}
+
+---
+
+## 3. Hybrid Decision Stage Distribution
+
+| Class | Support | Decided by Rules (%) | Decided by ML (%) | Detection Status |
+|---|---|---|---|---|
+| **Normal** | {class_eval['Normal']['total_frames']:,} | {class_eval['Normal']['hybrid']['decided_by_rule'] / class_eval['Normal']['total_frames'] * 100:.2f}% | {class_eval['Normal']['hybrid']['decided_by_ml'] / class_eval['Normal']['total_frames'] * 100:.2f}% | {class_eval['Normal']['hybrid']['detected_normal'] / class_eval['Normal']['total_frames'] * 100:.2f}% Clean Normal |
+| **DoS** | {class_eval['DoS']['total_frames']:,} | {class_eval['DoS']['hybrid']['decided_by_rule'] / class_eval['DoS']['total_frames'] * 100:.2f}% | {class_eval['DoS']['hybrid']['decided_by_ml'] / class_eval['DoS']['total_frames'] * 100:.2f}% | {class_eval['DoS']['hybrid']['detected_attacks'] / class_eval['DoS']['total_frames'] * 100:.2f}% Caught |
+| **Fuzzy** | {class_eval['Fuzzy']['total_frames']:,} | {class_eval['Fuzzy']['hybrid']['decided_by_rule'] / class_eval['Fuzzy']['total_frames'] * 100:.2f}% | {class_eval['Fuzzy']['hybrid']['decided_by_ml'] / class_eval['Fuzzy']['total_frames'] * 100:.2f}% | {class_eval['Fuzzy']['hybrid']['detected_attacks'] / class_eval['Fuzzy']['total_frames'] * 100:.2f}% Caught |
+| **Spoof_Gear** | {class_eval['Spoof_Gear']['total_frames']:,} | {class_eval['Spoof_Gear']['hybrid']['decided_by_rule'] / class_eval['Spoof_Gear']['total_frames'] * 100:.2f}% | {class_eval['Spoof_Gear']['hybrid']['decided_by_ml'] / class_eval['Spoof_Gear']['total_frames'] * 100:.2f}% | {class_eval['Spoof_Gear']['hybrid']['detected_attacks'] / class_eval['Spoof_Gear']['total_frames'] * 100:.2f}% Caught |
+| **Spoof_RPM** | {class_eval['Spoof_RPM']['total_frames']:,} | {class_eval['Spoof_RPM']['hybrid']['decided_by_rule'] / class_eval['Spoof_RPM']['total_frames'] * 100:.2f}% | {class_eval['Spoof_RPM']['hybrid']['decided_by_ml'] / class_eval['Spoof_RPM']['total_frames'] * 100:.2f}% | {class_eval['Spoof_RPM']['hybrid']['detected_attacks'] / class_eval['Spoof_RPM']['total_frames'] * 100:.2f}% Caught |
+"""
+
+    with MD_OUTPUT_PATH.open("w", encoding="utf-8") as f:
+        f.write(md_content)
+    print(f"[Saved] Markdown report table saved to: {MD_OUTPUT_PATH}")
+
+    print("\n" + "=" * 70)
+    print("  EVALUATION SUMMARY")
+    print("=" * 70)
+    print(md_content)
+
+    return output_summary
 
 
 if __name__ == "__main__":
-    main()
+    evaluate()

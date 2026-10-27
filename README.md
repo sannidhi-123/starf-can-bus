@@ -1,6 +1,6 @@
 <div align="center">
 
-# CAN Bus Intrusion Detection System
+# STARF — Smart Traffic Anomaly Recognition Kit
 
 ### *Transformer-Based Anomaly Detection & Attack Classification for In-Vehicle Networks*
 
@@ -66,26 +66,22 @@ A single compromised ECU, a malicious OBD-II dongle, or a rogue Bluetooth module
 
 ## Project Overview
 
-This repository implements a **two-stage AI pipeline** for CAN bus intrusion detection:
+This repository implements a production-ready **Hybrid Intrusion Detection System (IDS)** for CAN bus networks, combining deterministic time-series heuristics with machine learning classification:
 
-| Stage | Task | Model | Trigger |
-|:------|:-----|:------|:--------|
-| **Stage 1** | Binary: Normal vs. Attack | DistilBERT (MLM, reconstruction loss) | Always runs on every window |
-| **Stage 2** | Multiclass: Exact attack type | RandomForest + TF-IDF + numeric features | Only when Stage 1 flags ATTACK |
+| Stage | Task | Model / Technique | Trigger |
+|:------|:-----|:------------------|:--------|
+| **Stage 1 (Rules)** | Deterministic Filtering | Whitelist (INVALID_ID), sliding-window rate (FREQUENCY), and delta timing (TIMING) | Evaluates every raw CAN frame in time order |
+| **Stage 2 (ML Multiclass)** | Deep Multiclass Classification | Balanced Random Forest (SMOTE-trained) + TreeExplainer SHAP explainability | Evaluated only when no deterministic rule fires |
 
-The system is served through a **FastAPI backend** with REST and WebSocket endpoints, and visualized in a **React + TypeScript SOC-style dashboard** with live stream monitoring, manual sequence analysis, and downloadable evaluation reports.
+The system is served through a **FastAPI backend** with unified REST and WebSocket endpoints, and visualized in a **React + TypeScript SOC-style dashboard** with real-time telemetry, terminal-style threat logging, severity ratings, and feature importance explainability.
 
-The entire approach is grounded in a linguistic analogy:
+### ⚠️ Scope & Operational Notes
 
-| NLP Concept | CAN Bus Equivalent |
-|:------------|:-------------------|
-| Word | CAN ID (hex → integer token) |
-| Sentence | Sequence of CAN frames (window = 64) |
-| Vocabulary | All unique CAN IDs observed in normal traffic |
-| Grammar | Temporal ordering patterns of CAN IDs |
-| Anomaly | Frame sequence that violates the learned grammar |
-
-The model **never sees attack data during training**. It learns the statistical "language" of a healthy CAN bus through Masked Language Modeling. Attack frames — with injected, out-of-distribution IDs — produce high reconstruction loss because the model has never learned to predict them.
+- **(a) Dataset Scope:** Currently, **only the Car Hacking Dataset** (Normal, DoS, Fuzzy, Gear spoofing, RPM spoofing) is implemented.
+- **(b) Excluded Datasets:** **OTIDS** and **impersonation attacks** are **not included yet**.
+- **(c) Legacy Pipeline as Fallback:** The **Hybrid Pipeline (Rules + ML)** is the primary operational pipeline powering both REST (`/predict`, `/predict/frame`) and WebSocket (`/ws/live`). The sequence-based DistilBERT MLM path is retained strictly as an offline fallback when hybrid artifacts are uninitialized.
+- **(d) Simulated Traffic Tag:** The dashboard can stream demo traffic synthesized from background traces. Any simulated traffic is explicitly marked with a **SIMULATED** badge in the threat log and API responses (`"simulated": true`).
+- **(e) Evaluation Test Split:** The benchmark evaluation uses a **balanced chronological held-out block** (20,000 frames per class, 100,000 frames total). This balanced split is designed to measure per-class recall and false alarms systematically, and does **not** reflect real-world vehicle traffic distribution (where normal packets represent >99% of total network traffic).
 
 ---
 
@@ -645,77 +641,70 @@ If artifacts are missing, `/health` returns HTTP `503` with a descriptive `detai
 
 ## Full Execution Workflow
 
-Run these steps **in order** when starting from raw data with no pre-trained artifacts.
+Run these steps **in order** from a clean checkout to prepare data, fit rules, train the classifier, and launch the system:
 
-### Step 1 — Download the Dataset
-
-Download the [Car-Hacking Dataset](https://ocslab.hksecurity.net/Datasets/car-hacking-dataset) and place all files in `data/`:
-
+### Step 1 — Download & Place Dataset
+Extract the Car Hacking dataset files into `data/car_hacking/`:
 ```
 data/
-├── DoS_dataset.csv
-├── Fuzzy_dataset.csv
-├── gear_dataset.csv
-├── RPM_dataset.csv
-└── normal_run_data.csv
+└── car_hacking/
+    ├── normal_run_data.txt      (or normal_traffic_augmented.csv)
+    ├── DoS_dataset.csv
+    ├── Fuzzy_dataset.csv
+    ├── gear_dataset.csv
+    └── RPM_dataset.csv
 ```
 
-### Step 2 — Data Exploration and Augmentation
-
-Open and run all cells in `notebooks/01_data_exploration.ipynb`.
-
-**Outputs:**
-- `data/normal_traffic_augmented.csv` (~56M rows)
-- `data/attack_traffic.csv`
-
-### Step 3 — Preprocessing and Sequence Construction
-
+### Step 2 — Dataset Preparation
+Parse and unify all classes into a canonical timestamped Parquet dataset:
 ```bash
-python src/preprocess.py
-python src/dataset.py
+python src/dataset_prepare.py
 ```
+**Output:** `data/prepared.parquet` (1,000,000 frames; 200,000 per class with attack flags).
 
-**Outputs:**
-- `data/vocab.json`
-- `data/sequences.pt`
+### Step 3 — Fit Deterministic Rule Thresholds
+Learn the normal CAN ID whitelist, frequency thresholds, and minimum inter-arrival times strictly from the training Normal traffic:
+```bash
+python src/rules.py
+```
+**Output:** `models/rules_config.json`
 
-### Step 4 — Stage 1 Training (DistilBERT MLM)
-
-> Training is GPU-intensive. On an NVIDIA RTX 3050 with batch size 64, expect several hours per full epoch on the augmented dataset. Use the GPU training machine for this step; transfer `sequences.pt` and `vocab.json` before training and transfer back `best_model.pt` and `threshold.json` afterward.
-
-**Outputs:**
-- `models/best_model.pt`
-- `models/threshold.json`
-
-### Step 5 — Stage 2 Training (Multiclass RandomForest)
-
+### Step 4 — Train Multiclass Attack Classifier (Random Forest + SMOTE)
+Train the frame-level Random Forest classifier with SMOTE over the chronological training block:
 ```bash
 python -m src.train_multiclass
 ```
-
 **Outputs:**
 - `models/multiclass_model.pkl`
-- `models/vectorizer.pkl`
-- `reports/multiclass_training_metrics.json`
+- `models/multiclass_features.json`
+- `models/multiclass_label_encoder.pkl`
+- `models/multiclass_meta.json`
 
-### Step 6 — Evaluation and Report Generation
+### Step 5 — Run Test Suite
+Run the full pytest suite:
+```bash
+pytest tests/ -v
+```
 
+### Step 6 — Run Held-Out Evaluation
+Evaluate Rules Only, ML Only, and Hybrid Pipeline configurations on the chronological 80/20 test split:
 ```bash
 python src/evaluate.py
 ```
-
 **Outputs:**
-- `reports/evaluation_metrics.json`
-- Loss distribution plots, ROC curve, confusion matrix in `reports/`
+- `reports/hybrid_evaluation.json`
+- `reports/hybrid_evaluation.md`
 
 ### Step 7 — Start Backend and Frontend
 
 ```bash
-# Terminal 1
+# Terminal 1 — Start FastAPI Backend
 python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
 
-# Terminal 2
-cd frontend && npm run dev
+# Terminal 2 — Start React Dashboard
+cd frontend
+npm install
+npm run dev
 ```
 
 ---

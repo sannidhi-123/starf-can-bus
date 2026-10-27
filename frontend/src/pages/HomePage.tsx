@@ -6,7 +6,7 @@ export function HomePage() {
       <nav className="fixed top-0 z-50 w-full bg-surface-container-low/80 backdrop-blur-md">
         <div className="mx-auto flex h-16 w-full max-w-[1440px] items-center justify-between px-6">
           <div className="flex items-center gap-2">
-            <span className="font-headline text-xl font-bold tracking-tighter text-primary">IDS.Sentinel</span>
+            <span className="font-headline text-xl font-bold tracking-tighter text-primary">STARF</span>
           </div>
           <div className="hidden items-center gap-8 md:flex">
             <Link className="border-b-2 border-primary pb-1 text-sm font-bold text-primary" to="/">
@@ -45,9 +45,11 @@ export function HomePage() {
               <span className="h-2 w-2 animate-pulse rounded-full bg-secondary" />
               <span className="font-mono text-xs font-bold uppercase tracking-widest">System Status: Active</span>
             </div>
-            <h1 className="mb-6 font-headline text-5xl font-bold leading-[1.1] tracking-tight text-primary md:text-7xl">Precision Sentinel</h1>
-            <p className="mx-auto mb-10 max-w-2xl text-xl leading-relaxed text-on-surface-variant md:text-2xl">
-              A Transformer-based Intrusion Detection System employing Masked Language Modeling for real-time anomaly quantification on Controller Area Network bus traffic.
+            <h1 className="mb-6 font-headline text-4xl font-bold leading-[1.15] tracking-tight text-primary md:text-6xl">
+              STARF <span className="block text-2xl font-semibold text-primary/80 md:text-4xl mt-2">(Smart Traffic Anomaly Recognition Framework)</span>
+            </h1>
+            <p className="mx-auto mb-10 max-w-3xl text-xl leading-relaxed text-on-surface-variant md:text-2xl">
+              An Explainable Hybrid Anomaly Detection System for Intra-Vehicular CAN-Bus Networks
             </p>
             <div className="flex flex-col items-center justify-center gap-4 md:flex-row">
               <Link
@@ -73,10 +75,10 @@ export function HomePage() {
                   <div className="h-3 w-3 rounded-full bg-surface-tint/20" />
                   <div className="h-3 w-3 rounded-full bg-tertiary-container/20" />
                 </div>
-                <div className="mx-auto font-mono text-[10px] uppercase tracking-widest text-outline">IDS Sentinel — System Architecture Overview</div>
+                <div className="mx-auto font-mono text-[10px] uppercase tracking-widest text-outline">STARF — System Architecture Overview</div>
               </div>
               <img
-                alt="Architectural diagram of the Transformer-based CAN Bus Intrusion Detection System showing ECU nodes, CAN Bus protocol line, and the IDS Sentinel anomaly detection module"
+                alt="Architectural diagram of the STARF Hybrid CAN Bus Intrusion Detection System showing ECU nodes, CAN Bus protocol line, and the anomaly detection module"
                 className="h-[400px] w-full object-cover"
                 src="/ids_architecture.png"
               />
@@ -163,7 +165,7 @@ export function HomePage() {
             <div className="mb-20 max-w-3xl">
               <h2 className="mb-8 font-headline text-4xl font-bold">Dual-Stage Intelligence Architecture</h2>
               <p className="text-lg leading-relaxed text-on-primary-container">
-                The IDS Sentinel platform implements a novel dual-stage machine learning pipeline. In the first stage, a fine-tuned DistilBERT encoder, pre-trained via Masked Language Modeling (MLM) on benign CAN ID sequences, continuously quantifies baseline network grammar deviations through reconstruction loss maximization. Sequences exceeding the empirically calibrated anomaly threshold are subsequently routed to a secondary Random Forest ensemble classifier for sub-millisecond multiclass threat categorization across four attack taxonomies: DoS, Fuzzy Injection, Gear Spoofing, and RPM Manipulation.
+                The STARF platform implements an explainable hybrid anomaly detection pipeline. In the first stage, deterministic automotive rule heuristics (arbitration ID whitelist, transmission frequency window, and inter-arrival timing checks) catch known and anomalous traffic patterns with 0ms overhead. Frames passing rule validation are subsequently evaluated by an ensemble Random Forest classifier with SHAP explainability for granular threat taxonomy categorization: DoS, Fuzzy Injection, Gear Spoofing, and RPM Manipulation.
               </p>
             </div>
 
@@ -279,8 +281,8 @@ export function HomePage() {
       <footer className="mt-auto w-full bg-surface-container-low">
         <div className="mx-auto flex w-full max-w-[1440px] flex-col items-center justify-between px-8 py-12 md:flex-row">
           <div className="mb-8 md:mb-0">
-            <div className="mb-2 font-headline text-xl font-bold text-primary">IDS.Sentinel</div>
-            <div className="text-xs text-on-surface-variant">© 2026 IDS.Sentinel — Transformer-Based Automotive Cyber-Intelligence</div>
+            <div className="mb-2 font-headline text-xl font-bold text-primary">STARF</div>
+            <div className="text-xs text-on-surface-variant">© 2026 STARF — Explainable Hybrid Anomaly Detection System for Intra-Vehicular CAN-Bus Networks</div>
           </div>
           <div className="flex gap-12">
             <div className="flex flex-col gap-2">

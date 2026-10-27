@@ -1,0 +1,45 @@
+{
+  "Normal": {
+    "precision": 0.9999736495388669,
+    "recall": 0.948725,
+    "f1-score": 0.9736754329698525,
+    "support": 40000.0
+  },
+  "DoS": {
+    "precision": 1.0,
+    "recall": 1.0,
+    "f1-score": 1.0,
+    "support": 40000.0
+  },
+  "Fuzzy": {
+    "precision": 0.9512247324613555,
+    "recall": 0.999975,
+    "f1-score": 0.9749908592321755,
+    "support": 40000.0
+  },
+  "Spoof_Gear": {
+    "precision": 1.0,
+    "recall": 1.0,
+    "f1-score": 1.0,
+    "support": 40000.0
+  },
+  "Spoof_RPM": {
+    "precision": 1.0,
+    "recall": 1.0,
+    "f1-score": 1.0,
+    "support": 40000.0
+  },
+  "accuracy": 0.98974,
+  "macro avg": {
+    "precision": 0.9902396764000445,
+    "recall": 0.9897400000000001,
+    "f1-score": 0.9897332584404056,
+    "support": 200000.0
+  },
+  "weighted avg": {
+    "precision": 0.9902396764000445,
+    "recall": 0.98974,
+    "f1-score": 0.9897332584404056,
+    "support": 200000.0
+  }
+}

@@ -131,10 +131,12 @@ export function AboutPage() {
             throttle.
           </p>
           <p style={{ ...BODY_TEXT_STYLE, marginTop: '12px', marginBottom: 0 }}>
-            This system implements a production-ready two-stage Intrusion Detection System trained entirely on normal CAN traffic -
-            requiring zero labeled attack examples during training. Stage 1 uses a DistilBERT Transformer trained via Masked Language
-            Modelling to learn the statistical grammar of normal vehicle communication. Stage 2 uses a RandomForest classifier to
-            identify the specific type of attack when an anomaly is confirmed.
+            STARF (Smart Traffic Anomaly Recognition Kit) implements a high-performance Hybrid Intrusion Detection System.
+            Stage 1 uses deterministic automotive rule heuristics (arbitration ID whitelist validation, frequency monitors,
+            and inter-arrival timing checks) fitted on training Normal traffic. Unflagged traffic passes to Stage 2, which uses
+            a multiclass Random Forest ML classifier trained on frame-level repetition, inter-arrival time deltas, and payload bytes
+            to classify cyber-attacks (DoS, Fuzzy, Spoof_Gear, Spoof_RPM). The legacy sequence-based DistilBERT MLM path is retained
+            strictly as an offline research baseline.
           </p>
 
           <div
@@ -241,17 +243,17 @@ export function AboutPage() {
             <line x1="320" y1="60" x2="338" y2="60" stroke="#1A6FD4" strokeWidth="1.5" markerEnd="url(#arrow)" />
 
             <rect x="340" y="20" width="100" height="80" rx="7" fill="#1A6FD4" stroke="#1560BC" strokeWidth="1.5" />
-            <text x="390" y="50" textAnchor="middle" fontSize="9" fontFamily="Inter,sans-serif" fontWeight="700" fill="white">
-              DistilBERT
+            <text x="390" y="47" textAnchor="middle" fontSize="9" fontFamily="Inter,sans-serif" fontWeight="700" fill="white">
+              Hybrid Rules
             </text>
-            <text x="390" y="63" textAnchor="middle" fontSize="8" fontFamily="Inter,sans-serif" fill="#EBF4FF">
-              Stage 1 MLM
+            <text x="390" y="60" textAnchor="middle" fontSize="8" fontFamily="Inter,sans-serif" fill="#EBF4FF">
+              Stage 1 Rules
             </text>
-            <text x="390" y="76" textAnchor="middle" fontSize="8" fontFamily="JetBrains Mono,monospace" fill="#EBF4FF">
-              best_model.pt
+            <text x="390" y="73" textAnchor="middle" fontSize="8" fontFamily="JetBrains Mono,monospace" fill="#EBF4FF">
+              rules_config.json
             </text>
-            <text x="390" y="89" textAnchor="middle" fontSize="8" fontFamily="JetBrains Mono,monospace" fill="#EBF4FF">
-              4 layers - 256d
+            <text x="390" y="86" textAnchor="middle" fontSize="8" fontFamily="JetBrains Mono,monospace" fill="#EBF4FF">
+              31 Whitelist IDs
             </text>
 
             <line x1="440" y1="60" x2="458" y2="60" stroke="#1A6FD4" strokeWidth="1.5" markerEnd="url(#arrow)" />
@@ -349,13 +351,13 @@ export function AboutPage() {
               </div>
 
               {[
-                ['Architecture', 'DistilBERT (custom compact)'],
-                ['Layers', '4 transformer layers'],
-                ['Hidden dim', '256'],
-                ['Attention', '4 heads'],
-                ['Window', '64 tokens'],
-                ['Mask rate', '15%'],
-                ['Threshold', '99th percentile'],
+                ['Stage 1 Pipeline', 'Deterministic Rules Engine'],
+                ['Heuristics', 'INVALID_ID, FREQUENCY, TIMING'],
+                ['Whitelist', '31 legitimate CAN IDs'],
+                ['Stage 2 Classifier', 'Random Forest (100 estimators)'],
+                ['SMOTE Balancing', 'Applied on train split only'],
+                ['Features', '12 frame features (rep, iat, dlc, d0-d7)'],
+                ['Held-Out F1 Score', '99.84% (100% recall)'],
               ].map(([key, value]) => (
                 <div
                   key={key}
@@ -545,22 +547,22 @@ export function AboutPage() {
           >
             {[
               {
-                title: 'Stage 1: MLM Anomaly Scoring',
+                title: 'Stage 1: Deterministic Rules Engine',
                 borderColor: 'var(--color-primary)',
                 text:
-                  'The DistilBERT model is trained exclusively on normal CAN traffic using Masked Language Modelling. 15% of tokens in each 64-token window are randomly hidden and the model learns to predict them from surrounding context - learning the grammar of normal vehicle communication. At inference, attack sequences produce high reconstruction loss because injected CAN IDs violate the learned grammar.',
+                  'Automotive CAN networks operate with strict periodicity and fixed arbitration IDs. Stage 1 enforces a 31-CAN ID whitelist, a 0.5s frequency anomaly window, and empirical inter-arrival time minimums (default 3.76ms) fitted strictly on training Normal traffic. Obvious floods and invalid IDs are flagged instantly with zero model inference latency.',
               },
               {
-                title: 'Stage 2: Attack Classification',
+                title: 'Stage 2: Multiclass ML Classification',
                 borderColor: 'var(--color-danger)',
                 text:
-                  'When Stage 1 flags an anomaly, Stage 2 activates. A RandomForest classifier trained on TF-IDF representations of CAN ID windows - combined with six numeric features (unique ratio, entropy, top frequency ratio, token mean, token std, repeat ratio) - identifies whether the attack is DoS flooding, Fuzzy injection, Gear spoofing, or RPM spoofing. Stage 2 only runs on confirmed anomalies, keeping inference overhead negligible.',
+                  'Frames not flagged by Stage 1 rules proceed to Stage 2. A Random Forest classifier evaluates 12 frame-level features: CAN ID, 50-frame repetition count, inter-arrival time delta, DLC, and payload bytes d0..d7. It accurately distinguishes benign traffic from subtle Fuzzy injections, Gear spoofing, and RPM manipulation.',
               },
               {
-                title: 'Decision Boundary',
+                title: 'Decision Architecture & Legacy Fallback',
                 borderColor: 'var(--color-warning)',
                 text:
-                  'The detection threshold is the 99th percentile of anomaly scores computed on 10,000 normal sequences. This guarantees a maximum 1% false alarm rate under training conditions. The threshold value is stored in models/threshold.json and loaded at backend startup. It can be recalibrated by running src/inference.py on new normal traffic from the target vehicle.',
+                  'Rule hits produce immediate Rule violation alerts with the responsible rule_id, evidence, and severity (High > Medium). Frames passing rules receive multiclass ML categorization with top-5 SHAP feature explanations. The legacy sequence-based DistilBERT MLM model is preserved as an offline research baseline.',
               },
             ].map((item) => (
               <div

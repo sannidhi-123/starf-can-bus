@@ -31,7 +31,7 @@ export interface BufferingMessage {
 }
 
 /**
- * Prediction result from the model
+ * Prediction result from the model (old /ws/predict format)
  */
 export interface PredictionMessage {
   type: 'prediction';
@@ -76,7 +76,21 @@ export interface ChartDataPoint {
 }
 
 /**
- * Threat log entry
+ * Severity levels for attack alerts
+ */
+export type Severity = 'High' | 'Medium' | null;
+
+/**
+ * SHAP feature importance entry
+ */
+export interface ShapFeature {
+  feature: string;
+  value: number;
+  shap_value: number;
+}
+
+/**
+ * Threat log entry — extended with hybrid pipeline fields
  */
 export interface ThreatLogEntry {
   id: string;
@@ -86,6 +100,15 @@ export interface ThreatLogEntry {
   canId: string;
   isAttack: boolean;
   confidence: number;
+  // Hybrid pipeline fields
+  decision: 'attack' | 'normal';
+  stage: 'rule' | 'ml' | 'legacy';
+  attackType: string | null;
+  ruleId: string | null;
+  reason: string | null;
+  severity: Severity;
+  simulated: boolean;
+  topFeatures: ShapFeature[];
 }
 
 /**
@@ -130,4 +153,27 @@ export interface CANFrame {
   timestamp?: number;
   dlc?: number;
   data?: string[];
+}
+
+/**
+ * Live payload from /ws/live endpoint (hybrid pipeline unified schema)
+ */
+export interface LivePayload {
+  score: number;
+  label: 'ATTACK' | 'NORMAL';
+  attack_type?: string | null;
+  confidence?: number;
+  threshold: number;
+  timestamp: string;
+  is_attack: boolean;
+  pipeline_path?: string;
+  rules_triggered?: unknown[];
+  // New unified fields
+  decision?: 'attack' | 'normal';
+  stage?: 'rule' | 'ml' | 'legacy';
+  rule_id?: string | null;
+  reason?: string | null;
+  severity?: Severity;
+  simulated?: boolean;
+  top_features?: ShapFeature[];
 }

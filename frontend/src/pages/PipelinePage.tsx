@@ -6,7 +6,7 @@ export function PipelinePage() {
       <main className="min-h-screen p-8">
         <header className="mb-12 max-w-4xl">
           <h1 className="mb-2 font-headline text-4xl font-bold tracking-tight text-primary">Model &amp; Pipeline Architecture</h1>
-          <p className="text-lg text-on-surface-variant">Formal specification and forensic visualization of the dual-stage inference pipeline, artifact lineage, and decision logic governing the IDS Sentinel anomaly detection framework.</p>
+          <p className="text-lg text-on-surface-variant">Formal specification and forensic visualization of the dual-stage inference pipeline, artifact lineage, and decision logic governing the STARF anomaly detection framework.</p>
         </header>
 
         {/* Section 1: Abstract */}
@@ -14,10 +14,10 @@ export function PipelinePage() {
           <div className="mb-2 font-mono text-[10px] font-bold uppercase tracking-widest text-secondary">Section 1</div>
           <h2 className="mb-6 font-headline text-2xl font-bold text-primary">Abstract</h2>
           <p className="mb-4 leading-relaxed text-on-surface-variant">
-            A dual-stage Intrusion Detection System (IDS) is presented for the real-time identification and classification of cyber-attacks targeting the Controller Area Network (CAN) bus protocol. The proposed architecture leverages a fine-tuned DistilBERT Transformer model, pre-trained via Masked Language Modeling (MLM) on sequences of benign CAN arbitration identifiers, to quantify per-sequence anomaly scores through reconstruction loss maximization. Sequences exceeding an empirically calibrated threshold are subsequently routed to a secondary Random Forest ensemble classifier for multiclass attack categorization.
+            A dual-stage Hybrid Intrusion Detection System (STARF — Smart Traffic Anomaly Recognition Kit) is presented for real-time identification and classification of cyber-attacks targeting the Controller Area Network (CAN) bus protocol. The operational architecture integrates deterministic automotive rule heuristics (Stage 1 arbitration ID whitelist, frequency, and inter-arrival timing monitors) with a frame-level multiclass Random Forest ML classifier (Stage 2) trained with SMOTE balancing. The sequence-based DistilBERT Transformer model trained via Masked Language Modeling (MLM) serves as an offline research baseline.
           </p>
           <p className="leading-relaxed text-on-surface-variant">
-            The system achieves a Stage-1 binary detection accuracy of <strong>0.9712</strong>, precision of <strong>0.9753</strong>, recall of <strong>0.9272</strong>, and F1-score of <strong>0.9506</strong> on the evaluation partition. Stage-2 multiclass classification across DoS, Fuzzy, Gear, and RPM attack categories exhibits <strong>100% accuracy</strong> on the current evaluation set; however, this performance is explicitly noted as overfitted and requires further generalization validation through cross-dataset evaluation.
+            On the rigorous held-out chronological 80/20 test evaluation (100,000 frames across 5 classes), the operational STARF Hybrid Pipeline achieves a detection <strong>Precision of 99.68%</strong>, <strong>Recall of 100.00%</strong>, and <strong>F1-score of 99.84%</strong>, completely catching all DoS, Fuzzy, Spoof_Gear, and Spoof_RPM injection frames with zero false negatives.
           </p>
         </section>
 

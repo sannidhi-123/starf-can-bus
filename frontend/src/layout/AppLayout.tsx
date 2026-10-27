@@ -102,21 +102,27 @@ export function AppLayout({ children }: AppLayoutProps) {
   useEffect(() => {
     let active = true;
 
-    apiClient
-      .getHealth()
-      .then((data) => {
-        if (active) {
-          setHealth(data);
-        }
-      })
-      .catch(() => {
-        if (active) {
-          setHealth(null);
-        }
-      });
+    const checkHealth = () => {
+      apiClient
+        .getHealth()
+        .then((data) => {
+          if (active) {
+            setHealth(data);
+          }
+        })
+        .catch(() => {
+          if (active) {
+            setHealth(null);
+          }
+        });
+    };
+
+    checkHealth();
+    const interval = setInterval(checkHealth, 4000);
 
     return () => {
       active = false;
+      clearInterval(interval);
     };
   }, [location.pathname]);
 
@@ -166,7 +172,7 @@ export function AppLayout({ children }: AppLayoutProps) {
                   letterSpacing: '-0.02em',
                 }}
               >
-                CAN·IDS
+              STARF
               </span>
               <span
                 style={{
@@ -177,7 +183,7 @@ export function AppLayout({ children }: AppLayoutProps) {
                   textTransform: 'uppercase',
                 }}
               >
-                Intrusion Detection
+                Smart Traffic Anomaly Recognition Kit
               </span>
             </Link>
           </div>
@@ -296,11 +302,37 @@ export function AppLayout({ children }: AppLayoutProps) {
               >
                 {pageLabel}
               </h1>
-              <p style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)' }}>CAN Bus Intrusion Detection Platform</p>
+              <p style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)' }}>Smart Traffic Anomaly Recognition Kit</p>
             </div>
 
-            <div style={{ display: 'flex', gap: '10px', fontSize: '0.72rem', color: 'var(--color-text-muted)' }}>
-              <span>Model: {health?.model ?? 'unknown'}</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '0.72rem', color: 'var(--color-text-muted)' }}>
+              <span
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '5px',
+                  fontWeight: 600,
+                  padding: '2px 8px',
+                  borderRadius: '999px',
+                  fontSize: '0.65rem',
+                  letterSpacing: '0.05em',
+                  textTransform: 'uppercase',
+                  background: health ? 'rgba(15,123,85,0.12)' : 'rgba(196,30,58,0.12)',
+                  color: health ? 'var(--color-success)' : 'var(--color-danger)',
+                  border: health ? '1px solid rgba(15,123,85,0.25)' : '1px solid rgba(196,30,58,0.25)',
+                }}
+              >
+                <span
+                  style={{
+                    width: '6px',
+                    height: '6px',
+                    borderRadius: '50%',
+                    background: health ? 'var(--color-success)' : 'var(--color-danger)',
+                  }}
+                />
+                {health ? 'ONLINE' : 'OFFLINE'}
+              </span>
+              <span>Model: {health ? (health.model || 'Random Forest + rules') : 'unknown'}</span>
               <span>|</span>
               <span>Device: {health?.device ?? 'n/a'}</span>
             </div>

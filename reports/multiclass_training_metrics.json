@@ -1,54 +1,54 @@
 {
-  "accuracy": 1.0,
+  "accuracy": 0.83,
   "class_counts": {
-    "DoS": 1000,
-    "Fuzzy": 1000,
-    "Gear": 1000,
-    "RPM": 1000
+    "DoS": 500,
+    "Fuzzy": 500,
+    "Gear": 500,
+    "RPM": 500
   },
   "window_size": 64,
-  "stride": 16,
-  "max_windows_per_class": 1000,
-  "tfidf_max_features": 1500,
+  "stride": 8,
+  "max_windows_per_class": 500,
+  "tfidf_max_features": 3000,
   "classification_report": {
     "DoS": {
       "precision": 1.0,
       "recall": 1.0,
       "f1-score": 1.0,
-      "support": 200.0
+      "support": 100.0
     },
     "Fuzzy": {
       "precision": 1.0,
-      "recall": 1.0,
-      "f1-score": 1.0,
-      "support": 200.0
+      "recall": 0.32,
+      "f1-score": 0.48484848484848486,
+      "support": 100.0
     },
     "Gear": {
-      "precision": 1.0,
+      "precision": 0.5952380952380952,
       "recall": 1.0,
-      "f1-score": 1.0,
-      "support": 200.0
+      "f1-score": 0.746268656716418,
+      "support": 100.0
     },
     "RPM": {
       "precision": 1.0,
       "recall": 1.0,
       "f1-score": 1.0,
-      "support": 200.0
+      "support": 100.0
     },
-    "accuracy": 1.0,
+    "accuracy": 0.83,
     "macro avg": {
-      "precision": 1.0,
-      "recall": 1.0,
-      "f1-score": 1.0,
-      "support": 800.0
+      "precision": 0.8988095238095238,
+      "recall": 0.8300000000000001,
+      "f1-score": 0.8077792853912257,
+      "support": 400.0
     },
     "weighted avg": {
-      "precision": 1.0,
-      "recall": 1.0,
-      "f1-score": 1.0,
-      "support": 800.0
+      "precision": 0.8988095238095238,
+      "recall": 0.83,
+      "f1-score": 0.8077792853912257,
+      "support": 400.0
     }
   },
-  "model_path": "C:\\Users\\Rushikesh\\PROJECTS\\can_bus_ids_project\\models\\multiclass_model.pkl",
-  "vectorizer_path": "C:\\Users\\Rushikesh\\PROJECTS\\can_bus_ids_project\\models\\vectorizer.pkl"
+  "model_path": "models/multiclass_model.pkl",
+  "vectorizer_path": "models/vectorizer.pkl"
 }

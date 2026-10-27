@@ -10,6 +10,16 @@ export type PredictionResponse = {
   is_attack: boolean;
   processing_time_ms: number;
   details?: Record<string, unknown> | null;
+  decision?: 'attack' | 'normal';
+  stage?: 'rule' | 'ml' | 'legacy';
+  rule_id?: string | null;
+  reason?: string | null;
+  severity?: 'High' | 'Medium' | null;
+  simulated?: boolean;
+  top_features?: Array<{ feature: string; value: number; shap_value: number }>;
+  can_id?: number;
+  can_id_hex?: string;
+  timestamp?: number | string;
 };
 
 export type LivePayload = {
@@ -19,12 +29,29 @@ export type LivePayload = {
   confidence?: number;
   threshold: number;
   timestamp: string;
+  is_attack?: boolean;
+  pipeline_path?: string;
+  rules_triggered?: unknown[];
+  // Unified pipeline fields
+  decision?: 'attack' | 'normal';
+  stage?: 'rule' | 'ml' | 'legacy';
+  rule_id?: string | null;
+  reason?: string | null;
+  severity?: 'High' | 'Medium' | null;
+  simulated?: boolean;
+  top_features?: Array<{ feature: string; value: number; shap_value: number }>;
 };
+
 
 export type HealthResponse = {
   status: string;
+  pipeline_loaded: boolean;
   model: string;
+  model_name: string;
+  rules_count: number;
+  shap_available: boolean;
   device: string;
+  version?: string;
 };
 
 export type StatsResponse = {
@@ -129,6 +156,33 @@ export const apiClient = {
       method: 'POST',
       body: JSON.stringify({ sequences, return_details: returnDetails }),
     }),
+  predictFrame: (frame: {
+    timestamp: number;
+    can_id: number | string;
+    dlc?: number;
+    data_bytes?: number[];
+    simulated?: boolean;
+  }) =>
+    requestJson<PredictionResponse>('/predict/frame', {
+      method: 'POST',
+      body: JSON.stringify(frame),
+    }),
+  getReplayFrames: (className = 'Normal', start = 0, count = 50) =>
+    requestJson<{
+      class: string;
+      start: number;
+      count: number;
+      total_test_frames: number;
+      frames: Array<{
+        timestamp: number;
+        can_id: number;
+        can_id_hex: string;
+        dlc: number;
+        data_bytes: number[];
+        label: string;
+        simulated: boolean;
+      }>;
+    }>(`/replay?class=${encodeURIComponent(className)}&start=${start}&count=${count}`),
   getReportAssetUrl: (fileName: string) => `${API_BASE}/static/reports/${fileName}`,
   getWebSocketUrl: () => API_BASE.replace(/^http/, 'ws') + '/ws/live',
 };

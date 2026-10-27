@@ -1,0 +1,51 @@
+{
+  "date": "2026-10-27T19:01:02.775465+00:00",
+  "data_file_used": "data\\prepared.parquet",
+  "split_method": "Chronological 80/20 split by contiguous blocks per class",
+  "training_cap": 300000,
+  "cap_per_class": 60000,
+  "row_counts_per_class": {
+    "train_before_smote": {
+      "Normal": 60000,
+      "DoS": 60000,
+      "Fuzzy": 60000,
+      "Spoof_Gear": 60000,
+      "Spoof_RPM": 60000
+    },
+    "train_after_smote": {
+      "Normal": 60000,
+      "DoS": 60000,
+      "Fuzzy": 60000,
+      "Spoof_Gear": 60000,
+      "Spoof_RPM": 60000
+    },
+    "test": {
+      "Normal": 40000,
+      "DoS": 40000,
+      "Fuzzy": 40000,
+      "Spoof_Gear": 40000,
+      "Spoof_RPM": 40000
+    }
+  },
+  "feature_list": [
+    "can_id",
+    "id_repetition_count",
+    "inter_arrival_time_delta",
+    "dlc",
+    "d0",
+    "d1",
+    "d2",
+    "d3",
+    "d4",
+    "d5",
+    "d6",
+    "d7"
+  ],
+  "model_type": "RandomForestClassifier(n_estimators=100, max_depth=22, min_samples_leaf=2)",
+  "accuracy": 0.98974,
+  "leakage_audit": {
+    "features_clean": true,
+    "temporal_integrity": true,
+    "splits_disjoint": true
+  }
+}

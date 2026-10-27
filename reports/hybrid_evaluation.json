@@ -1,0 +1,387 @@
+{
+  "timestamp": "2026-10-27T20:16:00Z",
+  "max_test_per_class": 20000,
+  "total_test_frames": 100000,
+  "class_breakdown": {
+    "Normal": {
+      "total_frames": 20000,
+      "rules_only": {
+        "detected_attacks": 0,
+        "detected_normal": 20000
+      },
+      "ml_only": {
+        "detected_attacks": 259,
+        "detected_normal": 19741,
+        "predicted_as_own_class": 19741
+      },
+      "hybrid": {
+        "decided_by_rule": 0,
+        "decided_by_ml": 20000,
+        "detected_attacks": 259,
+        "detected_normal": 19741
+      }
+    },
+    "DoS": {
+      "total_frames": 20000,
+      "rules_only": {
+        "detected_attacks": 20000,
+        "detected_normal": 0
+      },
+      "ml_only": {
+        "detected_attacks": 20000,
+        "detected_normal": 0,
+        "predicted_as_own_class": 20000
+      },
+      "hybrid": {
+        "decided_by_rule": 20000,
+        "decided_by_ml": 0,
+        "detected_attacks": 20000,
+        "detected_normal": 0
+      }
+    },
+    "Fuzzy": {
+      "total_frames": 20000,
+      "rules_only": {
+        "detected_attacks": 19719,
+        "detected_normal": 281
+      },
+      "ml_only": {
+        "detected_attacks": 19999,
+        "detected_normal": 1,
+        "predicted_as_own_class": 19999
+      },
+      "hybrid": {
+        "decided_by_rule": 19719,
+        "decided_by_ml": 281,
+        "detected_attacks": 20000,
+        "detected_normal": 0
+      }
+    },
+    "Spoof_Gear": {
+      "total_frames": 20000,
+      "rules_only": {
+        "detected_attacks": 19920,
+        "detected_normal": 80
+      },
+      "ml_only": {
+        "detected_attacks": 20000,
+        "detected_normal": 0,
+        "predicted_as_own_class": 20000
+      },
+      "hybrid": {
+        "decided_by_rule": 19920,
+        "decided_by_ml": 80,
+        "detected_attacks": 20000,
+        "detected_normal": 0
+      }
+    },
+    "Spoof_RPM": {
+      "total_frames": 20000,
+      "rules_only": {
+        "detected_attacks": 19956,
+        "detected_normal": 44
+      },
+      "ml_only": {
+        "detected_attacks": 20000,
+        "detected_normal": 0,
+        "predicted_as_own_class": 20000
+      },
+      "hybrid": {
+        "decided_by_rule": 19956,
+        "decided_by_ml": 44,
+        "detected_attacks": 20000,
+        "detected_normal": 0
+      }
+    }
+  },
+  "binary_metrics": {
+    "rules_only": {
+      "precision": 1.0,
+      "recall": 0.99494,
+      "f1": 0.99746,
+      "fpr": 0.0,
+      "tp": 79595,
+      "fp": 0,
+      "tn": 20000,
+      "fn": 405
+    },
+    "ml_only": {
+      "precision": 0.99677,
+      "recall": 0.99999,
+      "f1": 0.99838,
+      "fpr": 0.01295,
+      "tp": 79999,
+      "fp": 259,
+      "tn": 19741,
+      "fn": 1
+    },
+    "hybrid": {
+      "precision": 0.99677,
+      "recall": 1.0,
+      "f1": 0.99838,
+      "fpr": 0.01295,
+      "tp": 80000,
+      "fp": 259,
+      "tn": 19741,
+      "fn": 0
+    }
+  },
+  "per_class_detection_metrics": {
+    "rules_only": {
+      "Normal": {
+        "precision": 0.9802,
+        "recall": 1.0,
+        "f1": 0.99,
+        "support": 20000
+      },
+      "DoS": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "support": 20000
+      },
+      "Fuzzy": {
+        "precision": 1.0,
+        "recall": 0.9859,
+        "f1": 0.9929,
+        "support": 20000
+      },
+      "Spoof_Gear": {
+        "precision": 1.0,
+        "recall": 0.996,
+        "f1": 0.998,
+        "support": 20000
+      },
+      "Spoof_RPM": {
+        "precision": 1.0,
+        "recall": 0.9978,
+        "f1": 0.9989,
+        "support": 20000
+      }
+    },
+    "ml_only": {
+      "Normal": {
+        "precision": 0.9999,
+        "recall": 0.987,
+        "f1": 0.9935,
+        "support": 20000
+      },
+      "DoS": {
+        "precision": 0.9872,
+        "recall": 1.0,
+        "f1": 0.9936,
+        "support": 20000
+      },
+      "Fuzzy": {
+        "precision": 0.9872,
+        "recall": 1.0,
+        "f1": 0.9935,
+        "support": 20000
+      },
+      "Spoof_Gear": {
+        "precision": 0.9872,
+        "recall": 1.0,
+        "f1": 0.9936,
+        "support": 20000
+      },
+      "Spoof_RPM": {
+        "precision": 0.9872,
+        "recall": 1.0,
+        "f1": 0.9936,
+        "support": 20000
+      }
+    },
+    "hybrid": {
+      "Normal": {
+        "precision": 1.0,
+        "recall": 0.987,
+        "f1": 0.9935,
+        "support": 20000
+      },
+      "DoS": {
+        "precision": 0.9872,
+        "recall": 1.0,
+        "f1": 0.9936,
+        "support": 20000
+      },
+      "Fuzzy": {
+        "precision": 0.9872,
+        "recall": 1.0,
+        "f1": 0.9936,
+        "support": 20000
+      },
+      "Spoof_Gear": {
+        "precision": 0.9872,
+        "recall": 1.0,
+        "f1": 0.9936,
+        "support": 20000
+      },
+      "Spoof_RPM": {
+        "precision": 0.9872,
+        "recall": 1.0,
+        "f1": 0.9936,
+        "support": 20000
+      }
+    }
+  },
+  "confusion_matrices": {
+    "rules_only": {
+      "Normal": {
+        "Normal": 20000,
+        "Rule violation": 0,
+        "DoS": 0,
+        "Fuzzy": 0,
+        "Spoof_Gear": 0,
+        "Spoof_RPM": 0
+      },
+      "DoS": {
+        "Normal": 0,
+        "Rule violation": 20000,
+        "DoS": 0,
+        "Fuzzy": 0,
+        "Spoof_Gear": 0,
+        "Spoof_RPM": 0
+      },
+      "Fuzzy": {
+        "Normal": 281,
+        "Rule violation": 19719,
+        "DoS": 0,
+        "Fuzzy": 0,
+        "Spoof_Gear": 0,
+        "Spoof_RPM": 0
+      },
+      "Spoof_Gear": {
+        "Normal": 80,
+        "Rule violation": 19920,
+        "DoS": 0,
+        "Fuzzy": 0,
+        "Spoof_Gear": 0,
+        "Spoof_RPM": 0
+      },
+      "Spoof_RPM": {
+        "Normal": 44,
+        "Rule violation": 19956,
+        "DoS": 0,
+        "Fuzzy": 0,
+        "Spoof_Gear": 0,
+        "Spoof_RPM": 0
+      }
+    },
+    "ml_only": {
+      "Normal": {
+        "Normal": 19741,
+        "Rule violation": 0,
+        "DoS": 0,
+        "Fuzzy": 259,
+        "Spoof_Gear": 0,
+        "Spoof_RPM": 0
+      },
+      "DoS": {
+        "Normal": 0,
+        "Rule violation": 0,
+        "DoS": 20000,
+        "Fuzzy": 0,
+        "Spoof_Gear": 0,
+        "Spoof_RPM": 0
+      },
+      "Fuzzy": {
+        "Normal": 1,
+        "Rule violation": 0,
+        "DoS": 0,
+        "Fuzzy": 19999,
+        "Spoof_Gear": 0,
+        "Spoof_RPM": 0
+      },
+      "Spoof_Gear": {
+        "Normal": 0,
+        "Rule violation": 0,
+        "DoS": 0,
+        "Fuzzy": 0,
+        "Spoof_Gear": 20000,
+        "Spoof_RPM": 0
+      },
+      "Spoof_RPM": {
+        "Normal": 0,
+        "Rule violation": 0,
+        "DoS": 0,
+        "Fuzzy": 0,
+        "Spoof_Gear": 0,
+        "Spoof_RPM": 20000
+      }
+    },
+    "hybrid": {
+      "Normal": {
+        "Normal": 19741,
+        "Rule violation": 0,
+        "DoS": 0,
+        "Fuzzy": 259,
+        "Spoof_Gear": 0,
+        "Spoof_RPM": 0
+      },
+      "DoS": {
+        "Normal": 0,
+        "Rule violation": 20000,
+        "DoS": 0,
+        "Fuzzy": 0,
+        "Spoof_Gear": 0,
+        "Spoof_RPM": 0
+      },
+      "Fuzzy": {
+        "Normal": 0,
+        "Rule violation": 19719,
+        "DoS": 0,
+        "Fuzzy": 281,
+        "Spoof_Gear": 0,
+        "Spoof_RPM": 0
+      },
+      "Spoof_Gear": {
+        "Normal": 0,
+        "Rule violation": 19920,
+        "DoS": 0,
+        "Fuzzy": 0,
+        "Spoof_Gear": 80,
+        "Spoof_RPM": 0
+      },
+      "Spoof_RPM": {
+        "Normal": 0,
+        "Rule violation": 19956,
+        "DoS": 0,
+        "Fuzzy": 0,
+        "Spoof_Gear": 0,
+        "Spoof_RPM": 44
+      }
+    }
+  },
+  "ml_fine_grained_multiclass": {
+    "Normal": {
+      "precision": 0.9999,
+      "recall": 0.987,
+      "f1": 0.9935,
+      "support": 20000
+    },
+    "DoS": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "support": 20000
+    },
+    "Fuzzy": {
+      "precision": 0.9872,
+      "recall": 1.0,
+      "f1": 0.9935,
+      "support": 20000
+    },
+    "Spoof_Gear": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "support": 20000
+    },
+    "Spoof_RPM": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "support": 20000
+    }
+  }
+}

@@ -1,16 +1,46 @@
-// FILE: frontend/src/pages/DashboardPage.tsx - FIXES: FIX 1, FIX 2
+// FILE: frontend/src/pages/DashboardPage.tsx - STARF Hybrid Pipeline Dashboard
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
-import { CartesianGrid, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
-import { Activity, AlertTriangle, Shield, Sigma, ShieldCheck } from 'lucide-react';
-import { apiClient } from '../api/client';
-import { useLiveStreamContext } from '../context/LiveStreamContext';
+import {
+  CartesianGrid,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from 'recharts';
+import {
+  Activity,
+  AlertTriangle,
+  ChevronDown,
+  ChevronUp,
+  Database,
+  Play,
+  RotateCcw,
+  Send,
+  Shield,
+  Sparkles,
+  Square,
+} from 'lucide-react';
+import { apiClient, type PredictionResponse } from '../api/client';
 import { AppLayout, useAnalysisControl } from '../layout/AppLayout';
-import { AdvancedAnalytics } from '../components/AdvancedAnalytics';
+import { AdvancedAnalytics, type FrameTelemetry } from '../components/AdvancedAnalytics';
+import { testDataGenerator } from '../utils/testDataGenerator';
 
-const DONUT_COLORS = ['#1A6FD4', '#3A80DA', '#5B8FD9', '#7EA8E3', '#AAC4ED'];
-const FALLBACK_TYPES = ['DoS', 'Fuzzy', 'Gear', 'RPM'];
-const MAX_RENDERED_POINTS = 90;
-const MAX_RENDERED_ALERTS = 14;
+const MAX_SESSION_FRAMES = 120;
+const MAX_FEED_ALERTS = 25;
+
+const ATTACK_CLASSES = ['Normal', 'DoS', 'Fuzzy', 'Spoof_Gear', 'Spoof_RPM'] as const;
+type AttackClass = (typeof ATTACK_CLASSES)[number];
+
+const ATTACK_TYPE_COLORS: Record<string, string> = {
+  'DoS': '#DC2626',
+  'Fuzzy': '#D97706',
+  'Spoof_Gear': '#2563EB',
+  'Spoof_RPM': '#7C3AED',
+  'Rule violation': '#EA580C',
+  'Normal': '#10B981',
+};
 
 const CARD_STYLE: CSSProperties = {
   background: 'var(--color-bg-card)',
@@ -31,6 +61,25 @@ const SECTION_LABEL_STYLE: CSSProperties = {
   lineHeight: 1,
 };
 
+export type SessionFrame = {
+  id: number;
+  time: string;
+  timestamp: number;
+  canId: string;
+  canIdHex: string;
+  dlc: number;
+  dataBytes: number[];
+  decision: 'attack' | 'normal';
+  stage: 'rule' | 'ml' | 'legacy';
+  attackType: string;
+  severity: 'High' | 'Medium' | null;
+  confidence: number;
+  ruleId: string | null;
+  reason: string | null;
+  simulated: boolean;
+  topFeatures: Array<{ feature: string; value: number; shap_value: number }>;
+};
+
 export function DashboardPage() {
   return (
     <AppLayout>
@@ -40,40 +89,138 @@ export function DashboardPage() {
 }
 
 function DashboardContent() {
-  const { points, alerts, connected, threshold } = useLiveStreamContext();
   const { isAnalysisRunning } = useAnalysisControl();
 
-  const [renderedPoints, setRenderedPoints] = useState<typeof points>([]);
-  const [renderedAlerts, setRenderedAlerts] = useState<typeof alerts>([]);
-  const [renderedTotalAnalyzed, setRenderedTotalAnalyzed] = useState(0);
-  const [renderedAttacksDetected, setRenderedAttacksDetected] = useState(0);
+  // Traffic Source selection
+  const [trafficSource, setTrafficSource] = useState<'replay' | 'simulated' | 'manual'>('replay');
+  const [replayClass, setReplayClass] = useState<AttackClass>('DoS');
+  const [replayIndex, setReplayIndex] = useState(0);
+  const [replayTotalAvailable, setReplayTotalAvailable] = useState(20000);
+  const [streamSpeedMs, setStreamSpeedMs] = useState(600);
+  const [isReplaying, setIsReplaying] = useState(false);
 
-  const lastProcessedPointIdRef = useRef(0);
-  const lastProcessedAlertIdRef = useRef(0);
-  const ignoreUntilPointIdRef = useRef(0);
-  const ignoreUntilAlertIdRef = useRef(0);
+  // Manual Frame form inputs
+  const [manualCanId, setManualCanId] = useState('0x000');
+  const [manualDlc, setManualDlc] = useState(8);
+  const [manualDataBytes, setManualDataBytes] = useState('00 00 00 00 00 00 00 00');
+  const [manualLoading, setManualLoading] = useState(false);
+  const [manualNotice, setManualNotice] = useState<string | null>(null);
 
-  const [thresholdInput, setThresholdInput] = useState(0);
-  const [thresholdEdited, setThresholdEdited] = useState(false);
-  const [streamIntervalMs, setStreamIntervalMs] = useState(650);
-  const [controlBusy, setControlBusy] = useState<'threshold' | 'speed' | null>(null);
-  const [controlNotice, setControlNotice] = useState<string | null>(null);
-  const [controlError, setControlError] = useState<string | null>(null);
+  // Session state (evaluated responses in this session)
+  const [sessionFrames, setSessionFrames] = useState<SessionFrame[]>([]);
+  const [expandedShapId, setExpandedShapId] = useState<number | null>(null);
 
-  useEffect(() => {
-    if (!thresholdEdited && threshold > 0) {
-      setThresholdInput(Number(threshold.toFixed(3)));
+  const frameIdCounter = useRef(0);
+  const replayIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Helper to ingest an evaluated frame response into the session
+  const ingestFrame = (
+    result: PredictionResponse,
+    raw: {
+      can_id: number | string;
+      can_id_hex?: string;
+      dlc?: number;
+      data_bytes?: number[];
+      timestamp?: number;
+      simulated?: boolean;
     }
-  }, [threshold, thresholdEdited]);
+  ) => {
+    frameIdCounter.current += 1;
+    const cidNum = typeof raw.can_id === 'number' ? raw.can_id : parseInt(String(raw.can_id), 16) || 0;
+    const cidHex = raw.can_id_hex || `0x${cidNum.toString(16).toUpperCase().padStart(3, '0')}`;
+    const dbytes = raw.data_bytes || [0, 0, 0, 0, 0, 0, 0, 0];
+    const ts = raw.timestamp || Date.now() / 1000;
+    const timeStr = new Date(ts * 1000).toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
+    const isAttack = result.decision ? result.decision === 'attack' : (result.is_attack ?? (result.label === 'ATTACK'));
+    const stage = result.stage ?? (result.rule_id ? 'rule' : 'ml');
+    const attackType = result.attack_type || (stage === 'rule' ? 'Rule violation' : (isAttack ? 'Attack' : 'Normal'));
+    const confidence = typeof result.confidence === 'number' ? result.confidence : 0.0;
+    const severity = result.severity ?? (isAttack ? (stage === 'rule' ? 'High' : 'Medium') : null);
+    const simulated = Boolean(raw.simulated ?? result.simulated ?? false);
+
+    const frame: SessionFrame = {
+      id: frameIdCounter.current,
+      time: timeStr,
+      timestamp: ts,
+      canId: String(cidNum),
+      canIdHex: cidHex,
+      dlc: raw.dlc ?? 8,
+      dataBytes: dbytes,
+      decision: isAttack ? 'attack' : 'normal',
+      stage,
+      attackType: isAttack ? attackType : 'Normal',
+      severity,
+      confidence,
+      ruleId: result.rule_id ?? null,
+      reason: result.reason ?? null,
+      simulated,
+      topFeatures: result.top_features ?? [],
+    };
+
+    setSessionFrames((prev) => [...prev, frame].slice(-MAX_SESSION_FRAMES));
+  };
+
+  // Replay chunk fetcher
+  const stepReplay = async (count = 10) => {
+    try {
+      const data = await apiClient.getReplayFrames(replayClass, replayIndex, count);
+      setReplayTotalAvailable(data.total_test_frames);
+      setReplayIndex((prev) => (prev + data.frames.length) % Math.max(1, data.total_test_frames));
+
+      for (const rawFrame of data.frames) {
+        const res = await apiClient.predictFrame({
+          timestamp: rawFrame.timestamp,
+          can_id: rawFrame.can_id,
+          dlc: rawFrame.dlc,
+          data_bytes: rawFrame.data_bytes,
+          simulated: false,
+        });
+        ingestFrame(res, rawFrame);
+      }
+    } catch (err) {
+      console.error('Replay error:', err);
+    }
+  };
+
+  // Continuous replay timer
+  useEffect(() => {
+    if (trafficSource === 'replay' && isReplaying && isAnalysisRunning) {
+      replayIntervalRef.current = setInterval(() => {
+        stepReplay(1);
+      }, streamSpeedMs);
+    } else {
+      if (replayIntervalRef.current) {
+        clearInterval(replayIntervalRef.current);
+        replayIntervalRef.current = null;
+      }
+    }
+
+    return () => {
+      if (replayIntervalRef.current) {
+        clearInterval(replayIntervalRef.current);
+      }
+    };
+  }, [trafficSource, isReplaying, isAnalysisRunning, replayClass, replayIndex, streamSpeedMs]);
+
+  // Initial replay sample on first mount so the user has immediate real data
   useEffect(() => {
     let active = true;
-
     apiClient
-      .getStreamConfig()
-      .then((config) => {
-        if (active) {
-          setStreamIntervalMs(config.interval_ms);
+      .getReplayFrames('DoS', 0, 12)
+      .then(async (data) => {
+        if (!active) return;
+        setReplayTotalAvailable(data.total_test_frames);
+        setReplayIndex(12);
+        for (const rawFrame of data.frames) {
+          const res = await apiClient.predictFrame({
+            timestamp: rawFrame.timestamp,
+            can_id: rawFrame.can_id,
+            dlc: rawFrame.dlc,
+            data_bytes: rawFrame.data_bytes,
+            simulated: false,
+          });
+          if (active) ingestFrame(res, rawFrame);
         }
       })
       .catch(() => undefined);
@@ -83,671 +230,943 @@ function DashboardContent() {
     };
   }, []);
 
+  // Simulated traffic generator loop
   useEffect(() => {
-    if (!isAnalysisRunning) {
-      const latestPointId = points.length > 0 ? points[points.length - 1].id : 0;
-      ignoreUntilPointIdRef.current = Math.max(ignoreUntilPointIdRef.current, latestPointId);
-      return;
+    if (trafficSource === 'simulated' && isAnalysisRunning && isReplaying) {
+      testDataGenerator.start(
+        async (genFrame) => {
+          try {
+            const cidNum = parseInt(genFrame.can_id || '0', 16) || 0;
+            const dbytes = (genFrame.data || []).map((b) => parseInt(b, 16) || 0);
+            const ts = genFrame.timestamp ?? (Date.now() / 1000);
+            const res = await apiClient.predictFrame({
+              timestamp: ts,
+              can_id: cidNum,
+              dlc: genFrame.dlc ?? dbytes.length,
+              data_bytes: dbytes,
+              simulated: true,
+            });
+            ingestFrame(res, {
+              timestamp: ts,
+              can_id: cidNum,
+              can_id_hex: `0x${(genFrame.can_id || '0').toUpperCase()}`,
+              dlc: genFrame.dlc ?? dbytes.length,
+              data_bytes: dbytes,
+              simulated: true,
+            });
+          } catch (e) {
+            console.error('Simulated inference error:', e);
+          }
+        },
+        streamSpeedMs,
+        0.25
+      );
+    } else {
+      testDataGenerator.stop();
     }
 
-    const cutoff = Math.max(lastProcessedPointIdRef.current, ignoreUntilPointIdRef.current);
-    const incomingPoints = points.filter((point) => point.id > cutoff);
+    return () => {
+      testDataGenerator.stop();
+    };
+  }, [trafficSource, isAnalysisRunning, isReplaying, streamSpeedMs]);
 
-    if (incomingPoints.length === 0) {
-      return;
-    }
+  // Handle Manual Frame Submission
+  const handleManualSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setManualLoading(true);
+    setManualNotice(null);
 
-    lastProcessedPointIdRef.current = incomingPoints[incomingPoints.length - 1].id;
+    try {
+      const cid = manualCanId.startsWith('0x') || manualCanId.startsWith('0X')
+        ? parseInt(manualCanId, 16)
+        : parseInt(manualCanId, 10);
+      const byteTokens = manualDataBytes.split(/[\s,]+/).filter(Boolean);
+      const dbytes = byteTokens.map((t) => (t.startsWith('0x') ? parseInt(t, 16) : parseInt(t, 16) || 0)).slice(0, 8);
+      while (dbytes.length < 8) dbytes.push(0);
 
-    setRenderedPoints((prev) => {
-      const merged = [...prev, ...incomingPoints];
-      return merged.slice(Math.max(0, merged.length - MAX_RENDERED_POINTS));
-    });
-
-    setRenderedTotalAnalyzed((prev) => prev + incomingPoints.length);
-    const newAttackCount = incomingPoints.filter((point) => point.label === 'ATTACK').length;
-    if (newAttackCount > 0) {
-      setRenderedAttacksDetected((prev) => prev + newAttackCount);
-    }
-  }, [points, isAnalysisRunning]);
-
-  useEffect(() => {
-    if (!isAnalysisRunning) {
-      const latestAlertId = alerts.length > 0 ? alerts[0].id : 0;
-      ignoreUntilAlertIdRef.current = Math.max(ignoreUntilAlertIdRef.current, latestAlertId);
-      return;
-    }
-
-    const cutoff = Math.max(lastProcessedAlertIdRef.current, ignoreUntilAlertIdRef.current);
-    const incomingAlerts = alerts.filter((alert) => alert.id > cutoff);
-
-    if (incomingAlerts.length === 0) {
-      return;
-    }
-
-    lastProcessedAlertIdRef.current = Math.max(...incomingAlerts.map((alert) => alert.id));
-
-    setRenderedAlerts((prev) => {
-      const unique = new Map<number, (typeof alerts)[number]>();
-      [...incomingAlerts, ...prev].forEach((alert) => {
-        if (!unique.has(alert.id)) {
-          unique.set(alert.id, alert);
-        }
+      const ts = Date.now() / 1000;
+      const res = await apiClient.predictFrame({
+        timestamp: ts,
+        can_id: cid,
+        dlc: manualDlc,
+        data_bytes: dbytes,
+        simulated: false,
       });
-      return Array.from(unique.values()).slice(0, MAX_RENDERED_ALERTS);
-    });
-  }, [alerts, isAnalysisRunning]);
 
-  async function handleThresholdUpdate() {
-    setControlBusy('threshold');
-    setControlError(null);
-    setControlNotice(null);
+      ingestFrame(res, {
+        timestamp: ts,
+        can_id: cid,
+        can_id_hex: `0x${cid.toString(16).toUpperCase().padStart(3, '0')}`,
+        dlc: manualDlc,
+        data_bytes: dbytes,
+        simulated: false,
+      });
 
-    try {
-      const safeThreshold = Number(thresholdInput.toFixed(6));
-      await apiClient.updateThreshold(safeThreshold, true);
-      setThresholdEdited(false);
-      setControlNotice('Threshold updated successfully.');
-    } catch {
-      setControlError('Unable to update threshold.');
+      setManualNotice(`Evaluated ${cid}: ${res.decision?.toUpperCase() ?? res.label} (${res.attack_type || (res.rule_id ? 'Rule violation' : 'Normal')})`);
+    } catch (err: any) {
+      setManualNotice(`Error: ${err.message || 'Submission failed'}`);
     } finally {
-      setControlBusy(null);
+      setManualLoading(false);
     }
-  }
+  };
 
-  async function handleSpeedUpdate() {
-    setControlBusy('speed');
-    setControlError(null);
-    setControlNotice(null);
+  const handleResetSession = () => {
+    setSessionFrames([]);
+    frameIdCounter.current = 0;
+  };
 
-    try {
-      const config = await apiClient.updateStreamConfig(streamIntervalMs);
-      setStreamIntervalMs(config.interval_ms);
-      setControlNotice(`Live sequence speed set to ${config.frames_per_second.toFixed(2)} fps.`);
-    } catch {
-      setControlError('Unable to update stream speed.');
-    } finally {
-      setControlBusy(null);
-    }
-  }
-
-  const averageScore = useMemo(() => {
-    if (renderedPoints.length === 0) {
-      return 0;
-    }
-    const total = renderedPoints.reduce((acc, point) => acc + point.score, 0);
-    return total / renderedPoints.length;
-  }, [renderedPoints]);
+  // ---------------------------------------------------------------------------
+  // Metrics Computed from Actual Responses in This Session
+  // ---------------------------------------------------------------------------
+  const messagesAnalyzed = sessionFrames.length;
+  const alertsList = useMemo(() => sessionFrames.filter((f) => f.decision === 'attack'), [sessionFrames]);
+  const alertsTriggered = alertsList.length;
 
   const detectionRate = useMemo(() => {
-    if (!renderedTotalAnalyzed) {
-      return 0;
-    }
-    return (renderedAttacksDetected / renderedTotalAnalyzed) * 100;
-  }, [renderedAttacksDetected, renderedTotalAnalyzed]);
+    if (messagesAnalyzed === 0) return 0;
+    return (alertsTriggered / messagesAnalyzed) * 100;
+  }, [alertsTriggered, messagesAnalyzed]);
 
+  const meanConfidence = useMemo(() => {
+    if (messagesAnalyzed === 0) return 0;
+    const total = sessionFrames.reduce((acc, f) => acc + f.confidence, 0);
+    return total / messagesAnalyzed;
+  }, [sessionFrames, messagesAnalyzed]);
+
+  // Stage split (Rule vs ML)
+  const stageSplit = useMemo(() => {
+    const rules = alertsList.filter((a) => a.stage === 'rule').length;
+    const ml = alertsList.filter((a) => a.stage === 'ml').length;
+    return { rules, ml };
+  }, [alertsList]);
+
+  // Attack breakdown counts
   const attackBreakdown = useMemo(() => {
-    const map = new Map<string, number>();
-    renderedAlerts.forEach((item) => {
-      map.set(item.attackType, (map.get(item.attackType) ?? 0) + 1);
-    });
-    return Array.from(map.entries()).map(([name, value]) => ({ name, value }));
-  }, [renderedAlerts]);
-
-  const donutData = useMemo(() => {
-    if (attackBreakdown.length === 0) {
-      return FALLBACK_TYPES.map((name) => ({ name, value: 0 }));
-    }
-    return attackBreakdown;
-  }, [attackBreakdown]);
-
-  const donutTotal = useMemo(() => donutData.reduce((acc, item) => acc + item.value, 0), [donutData]);
-
-  const donutGradient = useMemo(() => {
-    if (donutTotal === 0) {
-      return 'conic-gradient(#ECEFF5 0deg 360deg)';
-    }
-
-    let running = 0;
-    const segments = donutData.map((item, index) => {
-      const start = running;
-      const span = (item.value / donutTotal) * 360;
-      running += span;
-      return `${DONUT_COLORS[index % DONUT_COLORS.length]} ${start.toFixed(2)}deg ${running.toFixed(2)}deg`;
-    });
-
-    return `conic-gradient(${segments.join(',')})`;
-  }, [donutData, donutTotal]);
-
-  const scoreDistribution = useMemo(() => {
-    if (renderedPoints.length === 0) {
-      return [] as Array<{ bin: string; count: number }>;
-    }
-
-    const min = Math.min(...renderedPoints.map((item) => item.score));
-    const max = Math.max(...renderedPoints.map((item) => item.score));
-    const bins = 8;
-    const width = (max - min) / bins || 0.1;
-    const counts = new Array<number>(bins).fill(0);
-
-    renderedPoints.forEach((item) => {
-      const idx = Math.min(bins - 1, Math.floor((item.score - min) / width));
-      counts[idx] += 1;
-    });
-
-    return counts.map((count, idx) => {
-      const start = min + idx * width;
-      const end = start + width;
-      return {
-        bin: `${start.toFixed(2)}-${end.toFixed(2)}`,
-        count,
-      };
-    });
-  }, [renderedPoints]);
-
-  const maxHistogramCount = useMemo(() => {
-    const counts = scoreDistribution.map((item) => item.count);
-    return counts.length > 0 ? Math.max(1, ...counts) : 1;
-  }, [scoreDistribution]);
-
-  const eventFeed = useMemo(() => {
-    const alertsById = new Map(renderedAlerts.map((item) => [item.id, item]));
-    return [...renderedPoints]
-      .slice(-MAX_RENDERED_ALERTS)
-      .reverse()
-      .map((point) => {
-        const matchingAlert = alertsById.get(point.id);
-        return {
-          id: point.id,
-          time: point.time,
-          label: point.label,
-          score: point.score,
-          attackType: point.attackType ?? 'Normal',
-          confidence: matchingAlert?.confidence ?? 0,
-        };
-      });
-  }, [renderedPoints, renderedAlerts]);
-
-  const statusBadge = useMemo(() => {
-    if (!isAnalysisRunning) {
-      return {
-        label: 'PAUSED',
-        style: {
-          border: '1px solid var(--color-border)',
-          background: 'var(--color-bg-hover)',
-          color: 'var(--color-text-muted)',
-        },
-      };
-    }
-
-    if (connected) {
-      return {
-        label: 'LIVE',
-        style: {
-          border: '1px solid rgba(15,123,85,0.2)',
-          background: 'var(--color-success-bg)',
-          color: 'var(--color-success)',
-        },
-      };
-    }
-
-    return {
-      label: 'OFFLINE',
-      style: {
-        border: '1px solid var(--color-border)',
-        background: 'var(--color-bg-hover)',
-        color: 'var(--color-text-muted)',
-      },
+    const counts: Record<string, number> = {
+      'DoS': 0,
+      'Fuzzy': 0,
+      'Spoof_Gear': 0,
+      'Spoof_RPM': 0,
+      'Rule violation': 0,
     };
-  }, [connected, isAnalysisRunning]);
+    alertsList.forEach((a) => {
+      const type = a.attackType;
+      if (type in counts) counts[type]++;
+      else counts['Rule violation']++;
+    });
+    return counts;
+  }, [alertsList]);
 
-  const chartData =
-    renderedPoints.length > 0
-      ? renderedPoints
-      : [{ time: '--:--:--', score: 0, attackScore: null, threshold: 0, id: 0, label: 'NORMAL', attackType: null }];
+  // Severity breakdown
+  const severityBreakdown = useMemo(() => {
+    let high = 0;
+    let medium = 0;
+    alertsList.forEach((a) => {
+      if (a.severity === 'High') high++;
+      else if (a.severity === 'Medium') medium++;
+      else if (a.stage === 'rule') high++;
+      else medium++;
+    });
+    return { high, medium };
+  }, [alertsList]);
 
-  const activeThreshold = threshold > 0 ? threshold : thresholdInput || 0.75;
-  const cpuLoad = Math.min(95, Math.max(10, Math.round((detectionRate + (connected ? 8 : 0)) / 4)));
+  // Chart data for Detection Feed
+  const chartData = useMemo(() => {
+    if (sessionFrames.length === 0) {
+      return [{ time: '--:--:--', confidence: 0, stage: 'ml', severity: null, decision: 'normal' }];
+    }
+    return sessionFrames.slice(-60).map((f) => ({
+      time: f.time,
+      confidence: Math.round(f.confidence * 100),
+      stage: f.stage,
+      severity: f.severity,
+      decision: f.decision,
+      attackType: f.attackType,
+    }));
+  }, [sessionFrames]);
+
+  // Telemetry for Advanced Analytics components
+  const telemetryFrames: FrameTelemetry[] = useMemo(() => {
+    return sessionFrames.map((f) => ({
+      timestamp: f.timestamp,
+      canId: f.canId,
+      canIdHex: f.canIdHex,
+      dataBytes: f.dataBytes,
+    }));
+  }, [sessionFrames]);
 
   return (
     <div style={{ width: '100%', maxWidth: '100%', boxSizing: 'border-box' }}>
-      <header
+      {/* Top Source Mode Banner */}
+      <div
         style={{
+          ...CARD_STYLE,
+          padding: '12px 18px',
+          marginBottom: '16px',
           display: 'flex',
+          flexWrap: 'wrap',
           alignItems: 'center',
           justifyContent: 'space-between',
-          gap: '10px',
-          minHeight: '52px',
-          maxHeight: '60px',
-          marginBottom: '20px',
+          gap: '12px',
+          background: 'linear-gradient(90deg, var(--color-bg-card) 0%, var(--color-primary-light) 100%)',
         }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 }}>
-          <ShieldCheck
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <span
             style={{
-              width: '32px',
-              height: '32px',
-              color: 'var(--color-primary)',
-              maxHeight: '48px',
-              maxWidth: '48px',
-              objectFit: 'contain',
-              flexShrink: 0,
-            }}
-          />
-          <div style={{ minWidth: 0 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <h1
-                style={{
-                  fontSize: '1.1rem',
-                  fontWeight: 700,
-                  color: 'var(--color-text-primary)',
-                  letterSpacing: '-0.01em',
-                }}
-              >
-                Network Monitor
-              </h1>
-              <span
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  fontSize: '0.6rem',
-                  fontWeight: 600,
-                  padding: '2px 7px',
-                  height: '18px',
-                  letterSpacing: '0.08em',
-                  borderRadius: '999px',
-                  lineHeight: 1,
-                  textTransform: 'uppercase',
-                  ...statusBadge.style,
-                }}
-              >
-                {statusBadge.label}
-              </span>
-            </div>
-            <p style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', marginTop: '3px' }}>
-              Real-time CAN bus anomaly detection
-            </p>
-          </div>
-        </div>
-
-        <div style={{ textAlign: 'right' }}>
-          <div
-            style={{
-              fontSize: '0.68rem',
-              fontWeight: 600,
+              padding: '4px 10px',
+              borderRadius: '6px',
+              fontSize: '0.72rem',
+              fontWeight: 700,
+              letterSpacing: '0.04em',
               textTransform: 'uppercase',
-              letterSpacing: '0.09em',
-              color: 'var(--color-text-muted)',
-              lineHeight: 1,
+              background: 'var(--color-primary)',
+              color: 'white',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '6px',
             }}
           >
-            Threshold
-          </div>
-          <div style={{ marginTop: '3px', fontSize: '0.72rem', fontFamily: 'JetBrains Mono, monospace', color: 'var(--color-text-secondary)' }}>
-            {activeThreshold.toFixed(3)}
-          </div>
+            <Database size={12} />
+            Traffic Source: {trafficSource === 'replay' ? `Dataset Replay (${replayClass})` : trafficSource === 'simulated' ? 'Simulated Generator' : 'Manual Frame'}
+          </span>
+          <span style={{ fontSize: '0.75rem', color: 'var(--color-text-secondary)' }}>
+            {trafficSource === 'replay'
+              ? `Real held-out test frames from data/prepared.parquet (Offset: ${replayIndex}/${replayTotalAvailable})`
+              : trafficSource === 'simulated'
+              ? 'TestDataGenerator active with simulated=true tags'
+              : 'Single frame manual submission'}
+          </span>
         </div>
-      </header>
 
-      <section className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4" style={{ gap: '12px' }}>
-        {[
-          {
-            icon: <Activity size={14} color="var(--color-primary)" />,
-            value: renderedTotalAnalyzed.toLocaleString(),
-            label: 'Messages Analyzed',
-            trend: `+${Math.max(1, Math.round((1000 / streamIntervalMs) * 60)).toLocaleString()}/min`,
-            trendColor: 'var(--color-success)',
-          },
-          {
-            icon: <AlertTriangle size={14} color="var(--color-primary)" />,
-            value: renderedAttacksDetected.toLocaleString(),
-            label: 'Alerts Triggered',
-            trend: `${renderedAlerts.length} active`,
-            trendColor: 'var(--color-danger)',
-          },
-          {
-            icon: <Shield size={14} color="var(--color-primary)" />,
-            value: `${detectionRate.toFixed(2)}%`,
-            label: 'Detection Rate',
-            trend: 'runtime precision',
-            trendColor: 'var(--color-success)',
-          },
-          {
-            icon: <Sigma size={14} color="var(--color-primary)" />,
-            value: averageScore.toFixed(3),
-            label: 'Mean Score',
-            trend: `threshold ${activeThreshold.toFixed(3)}`,
-            trendColor: 'var(--color-warning)',
-          },
-        ].map((metric) => (
-          <article key={metric.label} style={{ ...CARD_STYLE, padding: '14px 16px', borderRadius: '10px' }}>
-            <div
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <button
+            type="button"
+            onClick={() => setTrafficSource('replay')}
+            style={{
+              padding: '6px 12px',
+              borderRadius: '6px',
+              fontSize: '0.75rem',
+              fontWeight: 600,
+              cursor: 'pointer',
+              border: trafficSource === 'replay' ? '1px solid var(--color-primary)' : '1px solid var(--color-border)',
+              background: trafficSource === 'replay' ? 'var(--color-primary)' : 'var(--color-bg-base)',
+              color: trafficSource === 'replay' ? 'white' : 'var(--color-text-secondary)',
+            }}
+          >
+            Dataset Replay
+          </button>
+          <button
+            type="button"
+            onClick={() => setTrafficSource('simulated')}
+            style={{
+              padding: '6px 12px',
+              borderRadius: '6px',
+              fontSize: '0.75rem',
+              fontWeight: 600,
+              cursor: 'pointer',
+              border: trafficSource === 'simulated' ? '1px solid var(--color-primary)' : '1px solid var(--color-border)',
+              background: trafficSource === 'simulated' ? 'var(--color-primary)' : 'var(--color-bg-base)',
+              color: trafficSource === 'simulated' ? 'white' : 'var(--color-text-secondary)',
+            }}
+          >
+            Simulated
+          </button>
+          <button
+            type="button"
+            onClick={() => setTrafficSource('manual')}
+            style={{
+              padding: '6px 12px',
+              borderRadius: '6px',
+              fontSize: '0.75rem',
+              fontWeight: 600,
+              cursor: 'pointer',
+              border: trafficSource === 'manual' ? '1px solid var(--color-primary)' : '1px solid var(--color-border)',
+              background: trafficSource === 'manual' ? 'var(--color-primary)' : 'var(--color-bg-base)',
+              color: trafficSource === 'manual' ? 'white' : 'var(--color-text-secondary)',
+            }}
+          >
+            Manual Frame
+          </button>
+          <button
+            type="button"
+            onClick={handleResetSession}
+            title="Reset session telemetry"
+            style={{
+              padding: '6px 10px',
+              borderRadius: '6px',
+              border: '1px solid var(--color-border)',
+              background: 'var(--color-bg-base)',
+              color: 'var(--color-text-muted)',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '4px',
+              fontSize: '0.72rem',
+            }}
+          >
+            <RotateCcw size={12} />
+            Reset
+          </button>
+        </div>
+      </div>
+
+      {/* Sub-Panel for Selected Source Controls */}
+      {trafficSource === 'replay' && (
+        <div style={{ ...CARD_STYLE, padding: '12px 18px', marginBottom: '16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <span style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--color-text-primary)' }}>Target Attack Class:</span>
+            <select
+              value={replayClass}
+              onChange={(e) => {
+                setReplayClass(e.target.value as AttackClass);
+                setReplayIndex(0);
+              }}
               style={{
-                width: '28px',
-                height: '28px',
-                borderRadius: '7px',
+                fontSize: '0.78rem',
+                padding: '5px 10px',
+                borderRadius: '6px',
+                border: '1px solid var(--color-border)',
+                background: 'var(--color-bg-base)',
+                color: 'var(--color-text-primary)',
+                fontWeight: 600,
+              }}
+            >
+              {ATTACK_CLASSES.map((cls) => (
+                <option key={cls} value={cls}>
+                  {cls}
+                </option>
+              ))}
+            </select>
+
+            <label style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)', display: 'flex', alignItems: 'center', gap: '4px' }}>
+              Speed:
+              <select
+                value={streamSpeedMs}
+                onChange={(e) => setStreamSpeedMs(Number(e.target.value))}
+                style={{
+                  fontSize: '0.72rem',
+                  padding: '2px 6px',
+                  borderRadius: '4px',
+                  border: '1px solid var(--color-border)',
+                  background: 'var(--color-bg-base)',
+                  color: 'var(--color-text-primary)',
+                }}
+              >
+                <option value={100}>10 fps (100ms)</option>
+                <option value={250}>4 fps (250ms)</option>
+                <option value={500}>2 fps (500ms)</option>
+                <option value={1000}>1 fps (1000ms)</option>
+              </select>
+            </label>
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <button
+              type="button"
+              onClick={() => stepReplay(20)}
+              style={{
+                padding: '6px 14px',
+                borderRadius: '6px',
+                fontSize: '0.75rem',
+                fontWeight: 600,
+                cursor: 'pointer',
                 background: 'var(--color-primary-light)',
+                color: 'var(--color-primary)',
+                border: '1px solid rgba(26,111,212,0.3)',
+              }}
+            >
+              Step 20 Frames
+            </button>
+            <button
+              type="button"
+              onClick={() => setIsReplaying((prev) => !prev)}
+              style={{
+                padding: '6px 14px',
+                borderRadius: '6px',
+                fontSize: '0.75rem',
+                fontWeight: 600,
+                cursor: 'pointer',
+                background: isReplaying ? 'var(--color-danger-bg)' : 'var(--color-success-bg)',
+                color: isReplaying ? 'var(--color-danger)' : 'var(--color-success)',
+                border: isReplaying ? '1px solid rgba(196,30,58,0.3)' : '1px solid rgba(15,123,85,0.3)',
                 display: 'flex',
                 alignItems: 'center',
-                justifyContent: 'center',
+                gap: '6px',
               }}
             >
-              {metric.icon}
-            </div>
+              {isReplaying ? <Square size={12} /> : <Play size={12} />}
+              {isReplaying ? 'Pause Replay' : 'Continuous Stream'}
+            </button>
+          </div>
+        </div>
+      )}
 
-            <div
+      {trafficSource === 'simulated' && (
+        <div style={{ ...CARD_STYLE, padding: '12px 18px', marginBottom: '16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <span style={{ fontSize: '0.75rem', color: 'var(--color-text-secondary)' }}>
+              Synthetic stream generated client-side via <code>TestDataGenerator</code>. Every alert is stamped with <span style={{ color: 'var(--color-warning)', fontWeight: 700 }}>SIMULATED</span>.
+            </span>
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <button
+              type="button"
+              onClick={() => testDataGenerator.injectAttackBurst(10, 50)}
               style={{
-                fontSize: '1.3rem',
-                fontWeight: 700,
-                fontFamily: 'JetBrains Mono, monospace',
-                color: 'var(--color-text-primary)',
-                marginTop: '8px',
-                lineHeight: 1.1,
+                padding: '6px 14px',
+                borderRadius: '6px',
+                fontSize: '0.75rem',
+                fontWeight: 600,
+                cursor: 'pointer',
+                background: 'var(--color-danger-bg)',
+                color: 'var(--color-danger)',
+                border: '1px solid rgba(196,30,58,0.3)',
               }}
             >
-              {metric.value}
-            </div>
-
-            <div
+              Inject 10-Frame Attack Burst
+            </button>
+            <button
+              type="button"
+              onClick={() => setIsReplaying((prev) => !prev)}
               style={{
-                fontSize: '0.68rem',
-                fontWeight: 500,
-                textTransform: 'uppercase',
-                letterSpacing: '0.09em',
-                color: 'var(--color-text-muted)',
-                marginTop: '2px',
-                lineHeight: 1,
+                padding: '6px 14px',
+                borderRadius: '6px',
+                fontSize: '0.75rem',
+                fontWeight: 600,
+                cursor: 'pointer',
+                background: isReplaying ? 'var(--color-danger-bg)' : 'var(--color-primary-light)',
+                color: isReplaying ? 'var(--color-danger)' : 'var(--color-primary)',
+                border: '1px solid var(--color-border)',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
               }}
             >
-              {metric.label}
-            </div>
+              {isReplaying ? <Square size={12} /> : <Play size={12} />}
+              {isReplaying ? 'Stop Generator' : 'Start Generator'}
+            </button>
+          </div>
+        </div>
+      )}
 
-            <div style={{ fontSize: '0.8rem', color: metric.trendColor, marginTop: '6px' }}>{metric.trend}</div>
-          </article>
-        ))}
+      {trafficSource === 'manual' && (
+        <form onSubmit={handleManualSubmit} style={{ ...CARD_STYLE, padding: '14px 18px', marginBottom: '16px' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '12px', alignItems: 'end' }}>
+            <div>
+              <label style={{ display: 'block', fontSize: '0.68rem', fontWeight: 600, color: 'var(--color-text-muted)', marginBottom: '4px' }}>
+                CAN ID (Hex or Dec)
+              </label>
+              <input
+                type="text"
+                value={manualCanId}
+                onChange={(e) => setManualCanId(e.target.value)}
+                placeholder="0x000 or 0x18F"
+                style={{
+                  width: '100%',
+                  padding: '6px 10px',
+                  borderRadius: '6px',
+                  border: '1px solid var(--color-border)',
+                  background: 'var(--color-bg-base)',
+                  fontSize: '0.8rem',
+                  fontFamily: 'JetBrains Mono, monospace',
+                  color: 'var(--color-text-primary)',
+                }}
+              />
+            </div>
+            <div>
+              <label style={{ display: 'block', fontSize: '0.68rem', fontWeight: 600, color: 'var(--color-text-muted)', marginBottom: '4px' }}>
+                DLC (0-8)
+              </label>
+              <input
+                type="number"
+                min={0}
+                max={8}
+                value={manualDlc}
+                onChange={(e) => setManualDlc(Number(e.target.value))}
+                style={{
+                  width: '100%',
+                  padding: '6px 10px',
+                  borderRadius: '6px',
+                  border: '1px solid var(--color-border)',
+                  background: 'var(--color-bg-base)',
+                  fontSize: '0.8rem',
+                  fontFamily: 'JetBrains Mono, monospace',
+                  color: 'var(--color-text-primary)',
+                }}
+              />
+            </div>
+            <div style={{ gridColumn: 'span 2' }}>
+              <label style={{ display: 'block', fontSize: '0.68rem', fontWeight: 600, color: 'var(--color-text-muted)', marginBottom: '4px' }}>
+                Data Bytes (8 Hex values, e.g. 00 11 22 33 44 55 66 77)
+              </label>
+              <input
+                type="text"
+                value={manualDataBytes}
+                onChange={(e) => setManualDataBytes(e.target.value)}
+                placeholder="00 00 00 00 00 00 00 00"
+                style={{
+                  width: '100%',
+                  padding: '6px 10px',
+                  borderRadius: '6px',
+                  border: '1px solid var(--color-border)',
+                  background: 'var(--color-bg-base)',
+                  fontSize: '0.8rem',
+                  fontFamily: 'JetBrains Mono, monospace',
+                  color: 'var(--color-text-primary)',
+                }}
+              />
+            </div>
+            <div>
+              <button
+                type="submit"
+                disabled={manualLoading}
+                style={{
+                  width: '100%',
+                  padding: '7px 16px',
+                  borderRadius: '6px',
+                  background: 'var(--color-primary)',
+                  color: 'white',
+                  fontWeight: 600,
+                  fontSize: '0.8rem',
+                  cursor: 'pointer',
+                  border: 'none',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '6px',
+                }}
+              >
+                <Send size={14} />
+                {manualLoading ? 'Analyzing...' : 'Analyze Frame'}
+              </button>
+            </div>
+          </div>
+          {manualNotice && (
+            <div style={{ marginTop: '10px', fontSize: '0.75rem', color: 'var(--color-primary)', fontWeight: 600 }}>
+              {manualNotice}
+            </div>
+          )}
+        </form>
+      )}
+
+      {/* 4 Session Metric Cards */}
+      <section className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4" style={{ gap: '12px' }}>
+        <article style={{ ...CARD_STYLE, padding: '14px 16px', borderRadius: '10px' }}>
+          <div style={{ width: '28px', height: '28px', borderRadius: '7px', background: 'var(--color-primary-light)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <Activity size={14} color="var(--color-primary)" />
+          </div>
+          <div style={{ fontSize: '1.3rem', fontWeight: 700, fontFamily: 'JetBrains Mono, monospace', color: 'var(--color-text-primary)', marginTop: '8px', lineHeight: 1.1 }}>
+            {messagesAnalyzed.toLocaleString()}
+          </div>
+          <div style={{ fontSize: '0.68rem', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.09em', color: 'var(--color-text-muted)', marginTop: '2px', lineHeight: 1 }}>
+            Messages Analyzed
+          </div>
+          <div style={{ fontSize: '0.75rem', color: 'var(--color-text-secondary)', marginTop: '6px' }}>
+            Session frames received
+          </div>
+        </article>
+
+        <article style={{ ...CARD_STYLE, padding: '14px 16px', borderRadius: '10px' }}>
+          <div style={{ width: '28px', height: '28px', borderRadius: '7px', background: 'rgba(196,30,58,0.12)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <AlertTriangle size={14} color="var(--color-danger)" />
+          </div>
+          <div style={{ fontSize: '1.3rem', fontWeight: 700, fontFamily: 'JetBrains Mono, monospace', color: 'var(--color-text-primary)', marginTop: '8px', lineHeight: 1.1 }}>
+            {alertsTriggered.toLocaleString()}
+          </div>
+          <div style={{ fontSize: '0.68rem', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.09em', color: 'var(--color-text-muted)', marginTop: '2px', lineHeight: 1 }}>
+            Alerts Triggered
+          </div>
+          <div style={{ fontSize: '0.75rem', color: 'var(--color-danger)', marginTop: '6px' }}>
+            {stageSplit.rules} rule · {stageSplit.ml} ML
+          </div>
+        </article>
+
+        <article style={{ ...CARD_STYLE, padding: '14px 16px', borderRadius: '10px' }}>
+          <div style={{ width: '28px', height: '28px', borderRadius: '7px', background: 'rgba(15,123,85,0.12)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <Shield size={14} color="var(--color-success)" />
+          </div>
+          <div style={{ fontSize: '1.3rem', fontWeight: 700, fontFamily: 'JetBrains Mono, monospace', color: 'var(--color-text-primary)', marginTop: '8px', lineHeight: 1.1 }}>
+            {detectionRate.toFixed(2)}%
+          </div>
+          <div style={{ fontSize: '0.68rem', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.09em', color: 'var(--color-text-muted)', marginTop: '2px', lineHeight: 1 }}>
+            Detection Rate (Alerts / Analyzed)
+          </div>
+          <div style={{ fontSize: '0.75rem', color: 'var(--color-success)', marginTop: '6px' }}>
+            {alertsTriggered} / {messagesAnalyzed} frames
+          </div>
+        </article>
+
+        <article style={{ ...CARD_STYLE, padding: '14px 16px', borderRadius: '10px' }}>
+          <div style={{ width: '28px', height: '28px', borderRadius: '7px', background: 'rgba(124,58,237,0.12)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <Sparkles size={14} color="#7C3AED" />
+          </div>
+          <div style={{ fontSize: '1.3rem', fontWeight: 700, fontFamily: 'JetBrains Mono, monospace', color: 'var(--color-text-primary)', marginTop: '8px', lineHeight: 1.1 }}>
+            {(meanConfidence * 100).toFixed(1)}%
+          </div>
+          <div style={{ fontSize: '0.68rem', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.09em', color: 'var(--color-text-muted)', marginTop: '2px', lineHeight: 1 }}>
+            Mean Confidence
+          </div>
+          <div style={{ fontSize: '0.75rem', color: 'var(--color-text-secondary)', marginTop: '6px' }}>
+            Average model & rule certainty
+          </div>
+        </article>
       </section>
 
+      {/* Main Grid: Detection Feed + Attack Breakdown */}
       <section className="grid grid-cols-1 xl:grid-cols-12" style={{ gap: '16px', marginTop: '16px' }}>
+        {/* Detection Feed (Plots Confidence by Stage & Severity) */}
         <article className="xl:col-span-8" style={{ ...CARD_STYLE, padding: '20px 24px' }}>
-          <div style={SECTION_LABEL_STYLE}>Anomaly Score Feed</div>
-          <h2 style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--color-text-primary)' }}>Real-time reconstruction loss</h2>
-          <p style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)', marginTop: '2px' }}>
-            Attack spikes are plotted against the calibrated threshold.
-          </p>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '8px' }}>
+            <div>
+              <div style={SECTION_LABEL_STYLE}>Detection Feed</div>
+              <h2 style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--color-text-primary)' }}>
+                Real-Time Frame Confidence &amp; Detection Stage
+              </h2>
+              <p style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)', marginTop: '2px' }}>
+                Frame-level classification confidence colored by decision stage (Rule vs ML) and severity.
+              </p>
+            </div>
+
+            {/* Stage / Severity Legend */}
+            <div style={{ display: 'flex', gap: '12px', fontSize: '0.7rem', color: 'var(--color-text-secondary)' }}>
+              <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#DC2626' }} />
+                Rule (High)
+              </span>
+              <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#D97706' }} />
+                Rule (Med)
+              </span>
+              <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#2563EB' }} />
+                ML Attack
+              </span>
+              <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#10B981' }} />
+                Normal
+              </span>
+            </div>
+          </div>
 
           <div style={{ marginTop: '12px', height: '280px' }}>
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={chartData}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#E2E8F4" />
-                <XAxis dataKey="time" tick={{ fontSize: 10, fill: '#8896A8' }} minTickGap={20} stroke="#E2E8F4" />
-                <YAxis tick={{ fontSize: 10, fill: '#8896A8' }} stroke="#E2E8F4" domain={[0, 1.2]} />
+                <XAxis dataKey="time" tick={{ fontSize: 10, fill: '#8896A8' }} minTickGap={25} stroke="#E2E8F4" />
+                <YAxis domain={[0, 100]} tick={{ fontSize: 10, fill: '#8896A8' }} stroke="#E2E8F4" unit="%" />
                 <Tooltip
-                  contentStyle={{
-                    borderRadius: '10px',
-                    border: '1px solid #E2E8F4',
-                    boxShadow: 'var(--shadow-sm)',
-                    fontSize: '0.75rem',
+                  content={({ active, payload }) => {
+                    if (active && payload && payload.length) {
+                      const data = payload[0].payload;
+                      return (
+                        <div style={{ background: 'white', padding: '10px 14px', borderRadius: '8px', border: '1px solid #E2E8F4', boxShadow: 'var(--shadow-md)', fontSize: '0.75rem' }}>
+                          <div style={{ fontWeight: 700, color: 'var(--color-text-primary)' }}>{data.time}</div>
+                          <div style={{ color: data.decision === 'attack' ? 'var(--color-danger)' : 'var(--color-success)', fontWeight: 600 }}>
+                            {data.attackType} ({data.decision?.toUpperCase()})
+                          </div>
+                          <div>Confidence: {data.confidence}%</div>
+                          <div>Stage: {data.stage?.toUpperCase()}</div>
+                          {data.severity && <div>Severity: {data.severity}</div>}
+                        </div>
+                      );
+                    }
+                    return null;
                   }}
                 />
-                <ReferenceLine
-                  y={activeThreshold}
-                  stroke="#C41E3A"
-                  strokeDasharray="6 4"
-                  label={{ value: 'Threshold', position: 'right', fill: '#8896A8', fontSize: '0.7rem' }}
-                />
-                <Line type="monotone" dataKey="score" stroke="#1A6FD4" strokeWidth={2} dot={false} isAnimationActive />
                 <Line
                   type="monotone"
-                  dataKey="attackScore"
-                  stroke="transparent"
-                  dot={{ fill: '#C41E3A', stroke: '#C41E3A', r: 3 }}
-                  connectNulls={false}
-                  isAnimationActive
+                  dataKey="confidence"
+                  stroke="#94A3B8"
+                  strokeWidth={1.5}
+                  isAnimationActive={false}
+                  dot={(props: any) => {
+                    const { cx, cy, payload } = props;
+                    if (cx == null || cy == null) {
+                      return <circle key={props.key || Math.random()} cx={0} cy={0} r={0} fill="none" />;
+                    }
+                    let dotColor = '#10B981'; // normal
+                    if (payload?.decision === 'attack') {
+                      if (payload.stage === 'rule') {
+                        dotColor = payload.severity === 'High' ? '#DC2626' : '#D97706';
+                      } else {
+                        dotColor = payload.severity === 'High' ? '#7C3AED' : '#2563EB';
+                      }
+                    }
+                    return (
+                      <circle
+                        key={props.key || `dot-${payload?.time}-${cx}`}
+                        cx={cx}
+                        cy={cy}
+                        r={payload?.decision === 'attack' ? 4 : 2.5}
+                        fill={dotColor}
+                        stroke="#fff"
+                        strokeWidth={1}
+                      />
+                    );
+                  }}
                 />
               </LineChart>
             </ResponsiveContainer>
           </div>
         </article>
 
+        {/* Attack Breakdown & Stage Split */}
         <article className="xl:col-span-4" style={{ ...CARD_STYLE, padding: '20px 24px' }}>
           <div style={SECTION_LABEL_STYLE}>Attack Breakdown</div>
-          <h2 style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--color-text-primary)' }}>Stage-2 class distribution</h2>
-          <p style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)', marginTop: '2px' }}>Recent attack class proportions.</p>
+          <h2 style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--color-text-primary)' }}>
+            Attack Types &amp; Decision Stages
+          </h2>
+          <p style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)', marginTop: '2px' }}>
+            Alert distribution across hybrid decision stages.
+          </p>
 
-          <div style={{ marginTop: '12px', display: 'flex', justifyContent: 'center', position: 'relative' }}>
-            <div style={{ width: '142px', height: '142px', borderRadius: '999px', background: donutGradient }} />
-            <div
-              style={{
-                position: 'absolute',
-                top: '50%',
-                left: '50%',
-                transform: 'translate(-50%, -50%)',
-                width: '84px',
-                height: '84px',
-                borderRadius: '999px',
-                background: 'var(--color-bg-card)',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                flexDirection: 'column',
-              }}
-            >
-              <span
-                style={{
-                  fontSize: '1.3rem',
-                  fontWeight: 700,
-                  fontFamily: 'JetBrains Mono, monospace',
-                  color: 'var(--color-text-primary)',
-                  lineHeight: 1.1,
-                }}
-              >
-                {renderedAttacksDetected}
-              </span>
-              <span style={{ fontSize: '0.68rem', color: 'var(--color-text-muted)', letterSpacing: '0.09em', textTransform: 'uppercase' }}>Alerts</span>
+          {/* Stage split pill */}
+          <div style={{ marginTop: '14px', padding: '10px 14px', borderRadius: '8px', background: 'var(--color-bg-base)', border: '1px solid var(--color-border)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.72rem', fontWeight: 600, color: 'var(--color-text-muted)', textTransform: 'uppercase' }}>
+              <span>Decision Stage Split</span>
+              <span>{alertsTriggered} Alerts</span>
+            </div>
+            <div style={{ display: 'flex', gap: '8px', marginTop: '6px' }}>
+              <div style={{ flex: Math.max(1, stageSplit.rules), height: '8px', borderRadius: '4px', background: '#EA580C' }} title={`Rules: ${stageSplit.rules}`} />
+              <div style={{ flex: Math.max(1, stageSplit.ml), height: '8px', borderRadius: '4px', background: '#2563EB' }} title={`ML: ${stageSplit.ml}`} />
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '6px', fontSize: '0.72rem' }}>
+              <span style={{ color: '#EA580C', fontWeight: 600 }}>Rule Stage: {stageSplit.rules} ({alertsTriggered > 0 ? ((stageSplit.rules / alertsTriggered) * 100).toFixed(0) : 0}%)</span>
+              <span style={{ color: '#2563EB', fontWeight: 600 }}>ML Stage: {stageSplit.ml} ({alertsTriggered > 0 ? ((stageSplit.ml / alertsTriggered) * 100).toFixed(0) : 0}%)</span>
             </div>
           </div>
 
-          <div style={{ marginTop: '12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-            {donutData.map((item, index) => {
-              const pct = donutTotal > 0 ? (item.value / donutTotal) * 100 : 0;
+          {/* Counts per attack type */}
+          <div style={{ marginTop: '16px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            <div style={{ fontSize: '0.68rem', fontWeight: 600, textTransform: 'uppercase', color: 'var(--color-text-muted)' }}>
+              Attack Classification Counts
+            </div>
+            {Object.entries(attackBreakdown).map(([atkType, count]) => {
+              const pct = alertsTriggered > 0 ? (count / alertsTriggered) * 100 : 0;
+              const color = ATTACK_TYPE_COLORS[atkType] || '#64748B';
               return (
-                <div key={item.name} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.75rem', color: 'var(--color-text-secondary)' }}>
+                <div key={atkType} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.75rem', padding: '3px 0' }}>
                   <span style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <span style={{ width: '9px', height: '9px', borderRadius: '2px', background: DONUT_COLORS[index % DONUT_COLORS.length] }} />
-                    <span style={{ fontSize: '0.75rem' }}>{item.name}</span>
+                    <span style={{ width: '8px', height: '8px', borderRadius: '2px', background: color }} />
+                    <span style={{ color: 'var(--color-text-secondary)', fontWeight: 500 }}>{atkType}</span>
                   </span>
-                  <span style={{ fontSize: '0.75rem', fontFamily: 'JetBrains Mono, monospace', color: 'var(--color-text-secondary)' }}>{pct.toFixed(0)}%</span>
+                  <span style={{ fontFamily: 'JetBrains Mono, monospace', color: 'var(--color-text-primary)', fontWeight: 600 }}>
+                    {count} ({pct.toFixed(0)}%)
+                  </span>
                 </div>
               );
             })}
           </div>
+
+          {/* Small severity breakdown */}
+          <div style={{ marginTop: '16px', paddingTop: '12px', borderTop: '1px dashed var(--color-border)' }}>
+            <div style={{ fontSize: '0.68rem', fontWeight: 600, textTransform: 'uppercase', color: 'var(--color-text-muted)', marginBottom: '6px' }}>
+              Severity Breakdown
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+              <div style={{ padding: '8px', borderRadius: '6px', background: 'rgba(196,30,58,0.08)', border: '1px solid rgba(196,30,58,0.2)' }}>
+                <div style={{ fontSize: '0.65rem', color: 'var(--color-danger)', fontWeight: 700, textTransform: 'uppercase' }}>High</div>
+                <div style={{ fontSize: '1.1rem', fontFamily: 'JetBrains Mono, monospace', fontWeight: 700, color: 'var(--color-danger)' }}>
+                  {severityBreakdown.high}
+                </div>
+              </div>
+              <div style={{ padding: '8px', borderRadius: '6px', background: 'rgba(217,119,6,0.08)', border: '1px solid rgba(217,119,6,0.2)' }}>
+                <div style={{ fontSize: '0.65rem', color: '#D97706', fontWeight: 700, textTransform: 'uppercase' }}>Medium</div>
+                <div style={{ fontSize: '1.1rem', fontFamily: 'JetBrains Mono, monospace', fontWeight: 700, color: '#D97706' }}>
+                  {severityBreakdown.medium}
+                </div>
+              </div>
+            </div>
+          </div>
         </article>
 
-        <article className="xl:col-span-8" style={{ ...CARD_STYLE, padding: '20px 24px' }}>
-          <div style={SECTION_LABEL_STYLE}>Threat Feed</div>
-          <h2 style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--color-text-primary)' }}>Latest sequence decisions</h2>
-          <p style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)', marginTop: '2px' }}>Incoming frames are ignored while analysis is paused.</p>
+        {/* Threat Feed (Full Detail with SHAP & Rule Reason) */}
+        <article className="xl:col-span-12" style={{ ...CARD_STYLE, padding: '20px 24px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div>
+              <div style={SECTION_LABEL_STYLE}>Threat Feed</div>
+              <h2 style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--color-text-primary)' }}>
+                Session Alerts &amp; Decision Explainability
+              </h2>
+              <p style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)', marginTop: '2px' }}>
+                Each alert reveals arbitration ID, decision stage, severity, rule reason or top-5 SHAP feature contributions.
+              </p>
+            </div>
+            <span style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)' }}>
+              Showing last {Math.min(alertsList.length, MAX_FEED_ALERTS)} alerts
+            </span>
+          </div>
 
-          <div style={{ marginTop: '12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-            {eventFeed.length === 0 ? (
-              <div style={{ border: '1px solid var(--color-border)', borderRadius: '8px', background: 'var(--color-bg-base)', padding: '10px 14px', fontSize: '0.78rem', color: 'var(--color-text-muted)' }}>
-                No alerts yet.
+          <div style={{ marginTop: '14px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            {alertsList.length === 0 ? (
+              <div style={{ border: '1px dashed var(--color-border)', borderRadius: '8px', background: 'var(--color-bg-base)', padding: '20px', textAlign: 'center', fontSize: '0.78rem', color: 'var(--color-text-muted)' }}>
+                No threats detected in this session yet. Replay attack classes (DoS, Fuzzy, Spoof_Gear, Spoof_RPM) to view live alert telemetry.
               </div>
             ) : (
-              eventFeed.map((item) => {
-                const isAttack = item.label === 'ATTACK';
+              alertsList.slice(-MAX_FEED_ALERTS).reverse().map((alert) => {
+                const isExpanded = expandedShapId === alert.id;
+                const isRuleStage = alert.stage === 'rule';
+
                 return (
                   <div
-                    key={item.id}
+                    key={alert.id}
                     style={{
-                      padding: '10px 14px',
+                      border: '1px solid var(--color-border)',
+                      borderLeft: alert.severity === 'High' ? '4px solid #DC2626' : '4px solid #D97706',
                       borderRadius: '8px',
-                      borderLeft: isAttack ? '3px solid var(--color-danger)' : '3px solid var(--color-success)',
-                      background: isAttack ? 'var(--color-danger-bg)' : 'var(--color-success-bg)',
+                      background: alert.severity === 'High' ? 'rgba(220,38,38,0.03)' : 'rgba(217,119,6,0.03)',
+                      padding: '12px 16px',
                     }}
                   >
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
-                        <span style={{ fontSize: '0.76rem', color: 'var(--color-text-primary)', fontWeight: 500 }}>{isAttack ? item.attackType.toUpperCase() : 'NORMAL'}</span>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                        {/* Time */}
+                        <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>
+                          {alert.time}
+                        </span>
+
+                        {/* CAN ID */}
+                        <span style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700, fontSize: '0.8rem', color: 'var(--color-text-primary)' }}>
+                          {alert.canIdHex} ({alert.canId})
+                        </span>
+
+                        {/* Stage Badge */}
                         <span
                           style={{
-                            fontSize: '0.6rem',
-                            fontWeight: 600,
+                            fontSize: '0.62rem',
+                            fontWeight: 700,
                             padding: '1px 6px',
                             borderRadius: '4px',
-                            letterSpacing: '0.08em',
+                            letterSpacing: '0.04em',
                             textTransform: 'uppercase',
-                            background: isAttack ? 'rgba(196,30,58,0.18)' : 'rgba(15,123,85,0.16)',
-                            color: isAttack ? 'var(--color-danger)' : 'var(--color-success)',
+                            background: isRuleStage ? 'rgba(234,88,12,0.15)' : 'rgba(37,99,235,0.15)',
+                            color: isRuleStage ? '#EA580C' : '#2563EB',
+                            border: isRuleStage ? '1px solid rgba(234,88,12,0.3)' : '1px solid rgba(37,99,235,0.3)',
                           }}
                         >
-                          {isAttack ? 'Attack' : 'Normal'}
+                          {alert.stage.toUpperCase()}
                         </span>
-                        <span style={{ fontSize: '0.72rem', fontFamily: 'JetBrains Mono, monospace', color: 'var(--color-text-secondary)' }}>
-                          Score {item.score.toFixed(3)}
+
+                        {/* Attack Type */}
+                        <span style={{ fontSize: '0.78rem', fontWeight: 600, color: 'var(--color-text-primary)' }}>
+                          {alert.attackType}
                         </span>
+
+                        {/* Severity Badge */}
+                        <span
+                          style={{
+                            fontSize: '0.62rem',
+                            fontWeight: 700,
+                            padding: '1px 6px',
+                            borderRadius: '4px',
+                            letterSpacing: '0.04em',
+                            textTransform: 'uppercase',
+                            background: alert.severity === 'High' ? 'rgba(220,38,38,0.15)' : 'rgba(217,119,6,0.15)',
+                            color: alert.severity === 'High' ? '#DC2626' : '#D97706',
+                          }}
+                        >
+                          {alert.severity ?? 'High'}
+                        </span>
+
+                        {/* Simulated Tag */}
+                        {alert.simulated && (
+                          <span
+                            style={{
+                              fontSize: '0.6rem',
+                              fontWeight: 700,
+                              padding: '1px 5px',
+                              borderRadius: '4px',
+                              background: 'rgba(168,85,247,0.15)',
+                              color: '#A855F7',
+                              border: '1px solid rgba(168,85,247,0.3)',
+                              letterSpacing: '0.04em',
+                            }}
+                          >
+                            SIMULATED
+                          </span>
+                        )}
                       </div>
-                      <span style={{ fontSize: '0.68rem', fontFamily: 'JetBrains Mono, monospace', color: 'var(--color-text-muted)' }}>{item.time}</span>
+
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                        <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.75rem', fontWeight: 600, color: 'var(--color-text-primary)' }}>
+                          Confidence: {(alert.confidence * 100).toFixed(1)}%
+                        </span>
+
+                        {/* Expandable SHAP button for ML alerts */}
+                        {!isRuleStage && alert.topFeatures && alert.topFeatures.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => setExpandedShapId(isExpanded ? null : alert.id)}
+                            style={{
+                              padding: '2px 8px',
+                              borderRadius: '4px',
+                              border: '1px solid var(--color-border)',
+                              background: 'var(--color-bg-base)',
+                              color: 'var(--color-primary)',
+                              fontSize: '0.7rem',
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '4px',
+                            }}
+                          >
+                            SHAP (Top 5) {isExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                          </button>
+                        )}
+                      </div>
                     </div>
+
+                    {/* Rule Stage Reason */}
+                    {isRuleStage && alert.reason && (
+                      <div style={{ marginTop: '6px', fontSize: '0.72rem', color: '#C2410C', fontFamily: 'JetBrains Mono, monospace' }}>
+                        Rule [{alert.ruleId}]: {alert.reason}
+                      </div>
+                    )}
+
+                    {/* Expandable SHAP Table for ML Alerts */}
+                    {!isRuleStage && isExpanded && alert.topFeatures && (
+                      <div style={{ marginTop: '10px', paddingTop: '8px', borderTop: '1px dashed var(--color-border)' }}>
+                        <div style={{ fontSize: '0.68rem', fontWeight: 600, color: 'var(--color-text-muted)', marginBottom: '4px' }}>
+                          Top 5 SHAP Feature Contributions:
+                        </div>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '6px' }}>
+                          {alert.topFeatures.slice(0, 5).map((feat, idx) => (
+                            <div
+                              key={idx}
+                              style={{
+                                padding: '4px 8px',
+                                borderRadius: '4px',
+                                background: 'var(--color-bg-base)',
+                                border: '1px solid var(--color-border)',
+                                fontSize: '0.7rem',
+                                fontFamily: 'JetBrains Mono, monospace',
+                              }}
+                            >
+                              <div style={{ color: 'var(--color-text-muted)', fontSize: '0.62rem' }}>{feat.feature}</div>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '2px' }}>
+                                <span>Val: {feat.value}</span>
+                                <span style={{ color: feat.shap_value > 0 ? '#DC2626' : '#2563EB', fontWeight: 600 }}>
+                                  {feat.shap_value > 0 ? `+${feat.shap_value.toFixed(3)}` : feat.shap_value.toFixed(3)}
+                                </span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 );
               })
             )}
           </div>
         </article>
-
-        <div className="xl:col-span-4" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-          <article style={{ ...CARD_STYLE, padding: '20px 24px' }}>
-            <div style={SECTION_LABEL_STYLE}>Controls</div>
-            <h2 style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--color-text-primary)' }}>Operator settings</h2>
-            <p style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)', marginTop: '2px' }}>Threshold and stream speed.</p>
-
-            <div style={{ marginTop: '12px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
-              <div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: 'var(--color-text-secondary)' }}>
-                  <span>Threshold</span>
-                  <span style={{ fontSize: '0.72rem', fontFamily: 'JetBrains Mono, monospace', color: 'var(--color-text-secondary)' }}>{thresholdInput.toFixed(3)}</span>
-                </div>
-                <input
-                  type="range"
-                  min={0.5}
-                  max={8}
-                  step={0.01}
-                  value={thresholdInput || threshold || 0.5}
-                  onChange={(event) => {
-                    setThresholdEdited(true);
-                    setThresholdInput(Number(event.target.value));
-                  }}
-                  className="w-full accent-primary"
-                />
-                <button
-                  type="button"
-                  onClick={handleThresholdUpdate}
-                  disabled={controlBusy !== null || thresholdInput <= 0}
-                  className="mt-3 w-full rounded-btn bg-primary px-3 py-2 text-[0.8rem] font-semibold text-white transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-70"
-                >
-                  {controlBusy === 'threshold' ? 'Updating...' : 'Apply Threshold'}
-                </button>
-              </div>
-
-              <div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: 'var(--color-text-secondary)' }}>
-                  <span>Stream Speed</span>
-                  <span style={{ fontSize: '0.72rem', fontFamily: 'JetBrains Mono, monospace', color: 'var(--color-text-secondary)' }}>
-                    {(1000 / streamIntervalMs).toFixed(2)} fps
-                  </span>
-                </div>
-                <input
-                  type="range"
-                  min={200}
-                  max={2000}
-                  step={50}
-                  value={streamIntervalMs}
-                  onChange={(event) => setStreamIntervalMs(Number(event.target.value))}
-                  className="w-full accent-primary"
-                />
-                <button
-                  type="button"
-                  onClick={handleSpeedUpdate}
-                  disabled={controlBusy !== null}
-                  className="mt-3 w-full rounded-btn border border-[rgba(26,111,212,0.2)] bg-primary-light px-3 py-2 text-[0.8rem] font-semibold text-primary transition-colors hover:bg-[#dcecff] disabled:cursor-not-allowed disabled:opacity-70"
-                >
-                  {controlBusy === 'speed' ? 'Applying...' : 'Apply Speed'}
-                </button>
-              </div>
-
-              {controlNotice ? <p style={{ fontSize: '0.8rem', color: 'var(--color-success)' }}>{controlNotice}</p> : null}
-              {controlError ? <p style={{ fontSize: '0.8rem', color: 'var(--color-danger)' }}>{controlError}</p> : null}
-            </div>
-          </article>
-
-          <article style={{ ...CARD_STYLE, padding: '20px 24px' }}>
-            <div style={SECTION_LABEL_STYLE}>Score Distribution</div>
-            <h2 style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--color-text-primary)' }}>Histogram</h2>
-            <p style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)', marginTop: '2px' }}>Recent anomaly score bins.</p>
-
-            <div style={{ marginTop: '12px', display: 'flex', alignItems: 'end', gap: '4px', height: '108px' }}>
-              {(scoreDistribution.length > 0
-                ? scoreDistribution
-                : new Array(8).fill(null).map((_, idx) => ({ bin: `${idx}`, count: 0 }))).map((bar, idx) => {
-                const height = Math.max(5, (bar.count / maxHistogramCount) * 100);
-                const color = idx >= 5 ? 'rgba(196,30,58,0.45)' : 'rgba(26,111,212,0.45)';
-                return (
-                  <div
-                    key={`${bar.bin}-${idx}`}
-                    style={{
-                      flex: 1,
-                      height: `${height}%`,
-                      borderTopLeftRadius: '3px',
-                      borderTopRightRadius: '3px',
-                      background: color,
-                    }}
-                  />
-                );
-              })}
-            </div>
-            <div style={{ marginTop: '8px', display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: 'var(--color-text-muted)' }}>
-              <span style={{ fontSize: '0.72rem', fontFamily: 'JetBrains Mono, monospace' }}>0.0</span>
-              <span style={{ fontSize: '0.72rem', fontFamily: 'JetBrains Mono, monospace' }}>1.0+</span>
-            </div>
-          </article>
-
-          <article style={{ ...CARD_STYLE, padding: '20px 24px' }}>
-            <div style={SECTION_LABEL_STYLE}>System Health</div>
-            <h2 style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--color-text-primary)' }}>Runtime status</h2>
-            <p style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)', marginTop: '2px' }}>Connectivity and load indicator.</p>
-
-            <div style={{ marginTop: '12px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)' }}>WebSocket status</span>
-                <span style={{ fontSize: '0.8rem', color: connected ? 'var(--color-success)' : 'var(--color-danger)', fontWeight: 600 }}>
-                  {connected ? 'Online' : 'Offline'}
-                </span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)' }}>Analysis mode</span>
-                <span style={{ fontSize: '0.8rem', color: isAnalysisRunning ? 'var(--color-success)' : 'var(--color-warning)', fontWeight: 600 }}>
-                  {isAnalysisRunning ? 'Running' : 'Paused'}
-                </span>
-              </div>
-
-              <div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
-                  <span style={{ fontSize: '0.8rem', color: 'var(--color-text-secondary)' }}>CPU Load</span>
-                  <span style={{ fontSize: '0.72rem', fontFamily: 'JetBrains Mono, monospace', color: 'var(--color-text-secondary)' }}>{cpuLoad}%</span>
-                </div>
-                <div style={{ height: '6px', borderRadius: '999px', background: 'var(--color-bg-hover)', overflow: 'hidden' }}>
-                  <div style={{ height: '100%', width: `${cpuLoad}%`, background: 'var(--color-primary)' }} />
-                </div>
-              </div>
-            </div>
-          </article>
-        </div>
       </section>
 
+      {/* Advanced Telemetry: Byte-Level Delta Map & IAT Distribution */}
       <div style={{ marginTop: '16px' }}>
-        <AdvancedAnalytics />
+        <AdvancedAnalytics recentFrames={telemetryFrames} />
       </div>
     </div>
   );

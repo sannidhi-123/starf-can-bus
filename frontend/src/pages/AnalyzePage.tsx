@@ -55,8 +55,8 @@ export function AnalyzePage() {
   async function onSubmit(event: FormEvent) {
     event.preventDefault();
 
-    if (tokens.length !== 64) {
-      setError(`Exactly 64 CAN IDs are required. Current count: ${tokens.length}`);
+    if (tokens.length === 0) {
+      setError('At least one CAN ID is required.');
       return;
     }
 
@@ -103,19 +103,19 @@ export function AnalyzePage() {
               lineHeight: 1.2,
             }}
           >
-            Sequence Analyzer
+            CAN Frame &amp; Sequence Analyzer
           </h1>
           <p style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', marginTop: '3px' }}>
-            Submit 64 CAN IDs for manual anomaly analysis
+            Submit CAN arbitration IDs for hybrid rule heuristics and multiclass ML evaluation
           </p>
         </div>
 
         <div className="grid grid-cols-1 gap-4 xl:grid-cols-12">
           <section className="xl:col-span-8" style={CARD_STYLE}>
             <div style={SECTION_LABEL_STYLE}>Manual Input</div>
-            <h2 style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--color-text-primary)' }}>Single-sequence inference</h2>
+            <h2 style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--color-text-primary)' }}>Hybrid inference</h2>
             <p style={{ marginTop: '4px', fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>
-              Paste exactly 64 IDs and run Stage-1/Stage-2 prediction.
+              Enter single or multiple CAN IDs (hex or decimal) to evaluate through the STARF hybrid detection pipeline.
             </p>
 
             <form onSubmit={onSubmit} style={{ marginTop: '14px' }}>
@@ -131,20 +131,20 @@ export function AnalyzePage() {
                   color: 'var(--color-text-muted)',
                 }}
               >
-                64 CAN IDs
+                CAN Arbitration IDs
               </label>
 
               <textarea
                 id="sequence-input"
                 className="analyze-sequence-input"
                 rows={7}
-                placeholder="0x18F 0x0C9 0x111 ..."
+                placeholder="0x18F 0x0C9 0x111 0x000 ..."
                 value={sequenceText}
                 onChange={(event) => setSequenceText(event.target.value)}
               />
 
               <div style={{ marginTop: '10px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', flexWrap: 'wrap' }}>
-                <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>{tokens.length}/64</span>
+                <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>{tokens.length} ID{tokens.length === 1 ? '' : 's'} entered</span>
 
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                   <button
@@ -188,7 +188,7 @@ export function AnalyzePage() {
                 className="mt-3 inline-flex items-center gap-2 rounded-btn bg-primary px-6 py-2.5 text-[0.83rem] font-semibold text-white transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-70"
               >
                 <Play size={14} />
-                {loading ? 'Analyzing...' : 'Analyze Sequence'}
+                {loading ? 'Analyzing...' : 'Analyze Input'}
               </button>
 
               {error ? <p style={{ marginTop: '10px', fontSize: '0.76rem', color: 'var(--color-danger)' }}>{error}</p> : null}
@@ -205,7 +205,7 @@ export function AnalyzePage() {
                 <span
                   style={{
                     fontSize: '0.68rem',
-                    fontWeight: 500,
+                    fontWeight: 600,
                     textTransform: 'uppercase',
                     letterSpacing: '0.09em',
                     color: result?.is_attack ? 'var(--color-danger)' : 'var(--color-success)',
@@ -217,25 +217,25 @@ export function AnalyzePage() {
               </div>
 
               <div style={{ marginTop: '8px', fontFamily: 'JetBrains Mono, monospace', fontSize: '1.3rem', fontWeight: 700, color: 'var(--color-text-primary)' }}>
-                {result ? result.anomaly_score.toFixed(3) : '0.000'}
+                {result ? `${((result.confidence ?? 0) * 100).toFixed(1)}%` : '0.0%'}
               </div>
-              <div style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)' }}>Anomaly score</div>
+              <div style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)' }}>Classification Confidence</div>
 
               <div style={{ marginTop: '12px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
                 <div>
-                  <div style={{ fontSize: '0.68rem', color: 'var(--color-text-muted)' }}>Threshold</div>
-                  <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.8rem', color: 'var(--color-text-primary)' }}>
-                    {result ? result.threshold.toFixed(3) : '0.000'}
+                  <div style={{ fontSize: '0.68rem', color: 'var(--color-text-muted)' }}>Stage</div>
+                  <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.8rem', color: 'var(--color-text-primary)', fontWeight: 600 }}>
+                    {result ? (result.stage?.toUpperCase() || (result.rule_id ? 'RULE' : 'ML')) : 'N/A'}
                   </div>
                 </div>
                 <div>
                   <div style={{ fontSize: '0.68rem', color: 'var(--color-text-muted)' }}>Attack Type</div>
-                  <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.8rem', color: 'var(--color-text-primary)' }}>{result?.attack_type ?? 'N/A'}</div>
+                  <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.8rem', color: 'var(--color-text-primary)', fontWeight: 600 }}>{result?.attack_type ?? 'N/A'}</div>
                 </div>
                 <div>
-                  <div style={{ fontSize: '0.68rem', color: 'var(--color-text-muted)' }}>Confidence</div>
+                  <div style={{ fontSize: '0.68rem', color: 'var(--color-text-muted)' }}>Severity</div>
                   <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.8rem', color: 'var(--color-text-primary)' }}>
-                    {result ? `${(result.confidence * 100).toFixed(1)}%` : '0.0%'}
+                    {result?.severity ?? (result?.is_attack ? 'High' : 'Normal')}
                   </div>
                 </div>
                 <div>

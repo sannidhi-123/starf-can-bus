@@ -10,14 +10,14 @@ import type {
   ChartDataPoint,
   ThreatLogEntry,
   PredictionMessage,
-  WebSocketMessage,
   UseWebSocketReturn,
   CANFrame,
+  LivePayload,
 } from '../types';
 import { testDataGenerator } from '../utils/testDataGenerator';
 
 // Configuration
-const WS_URL = 'ws://localhost:8000/ws/predict';
+const WS_URL = 'ws://localhost:8000/ws/live'; // Hybrid pipeline live stream
 const MAX_CHART_POINTS = 100;      // Maximum data points to display
 const MAX_LOG_ENTRIES = 50;        // Maximum threat log entries
 const RECONNECT_DELAY = 3000;      // Reconnection delay in ms
@@ -60,13 +60,6 @@ export function useWebSocket(): UseWebSocketReturn {
   const [lastPrediction, setLastPrediction] = useState<PredictionMessage | null>(null);
 
   /**
-   * Generate unique ID for log entries
-   */
-  const generateId = useCallback(() => {
-    return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-  }, []);
-
-  /**
    * Format timestamp for display
    */
   const formatTime = useCallback((isoString: string) => {
@@ -80,96 +73,88 @@ export function useWebSocket(): UseWebSocketReturn {
   }, []);
 
   /**
-   * Handle incoming WebSocket messages
+   * Handle incoming WebSocket messages from /ws/live (hybrid pipeline)
    */
   const handleMessage = useCallback((event: MessageEvent) => {
     try {
-      const message: WebSocketMessage = JSON.parse(event.data);
+      const raw = JSON.parse(event.data) as Record<string, unknown>;
 
-      switch (message.type) {
-        case 'connection':
-          console.log('[WS] Connected:', message.message);
-          setStats(prev => ({
-            ...prev,
-            threshold: message.threshold,
-            isConnected: true,
-            networkStatus: 'buffering',
-          }));
-          break;
-
-        case 'buffering':
-          setStats(prev => ({
-            ...prev,
-            bufferSize: message.buffer_size,
-            networkStatus: 'buffering',
-            messagesProcessed: prev.messagesProcessed + 1,
-            lastUpdate: new Date().toISOString(),
-          }));
-          break;
-
-        case 'prediction':
-          const prediction = message as PredictionMessage;
-          setLastPrediction(prediction);
-
-          // Update stats
-          setStats(prev => ({
-            ...prev,
-            messagesProcessed: prev.messagesProcessed + 1,
-            currentScore: prediction.anomaly_score,
-            bufferSize: prediction.buffer_size,
-            threshold: prediction.threshold,
-            attacksDetected: prediction.is_attack
-              ? prev.attacksDetected + 1
-              : prev.attacksDetected,
-            networkStatus: prediction.is_attack ? 'threat' : 'secure',
-            lastUpdate: prediction.timestamp,
-            uptime: Math.floor((Date.now() - startTime.current) / 1000),
-          }));
-
-          // Add to chart data
-          const chartPoint: ChartDataPoint = {
-            timestamp: Date.now(),
-            time: formatTime(prediction.timestamp),
-            score: prediction.anomaly_score,
-            isAttack: prediction.is_attack,
-            canId: prediction.can_id,
-          };
-
-          setChartData(prev => {
-            const newData = [...prev, chartPoint];
-            return newData.slice(-MAX_CHART_POINTS);
-          });
-
-          // Add to threat log if it's an attack
-          if (prediction.is_attack) {
-            const logEntry: ThreatLogEntry = {
-              id: generateId(),
-              timestamp: prediction.timestamp,
-              localTime: formatTime(prediction.timestamp),
-              anomalyScore: prediction.anomaly_score,
-              canId: prediction.can_id,
-              isAttack: true,
-              confidence: prediction.confidence,
-            };
-
-            setThreatLog(prev => {
-              const newLog = [logEntry, ...prev];
-              return newLog.slice(0, MAX_LOG_ENTRIES);
-            });
-          }
-          break;
-
-        case 'error':
-          console.error('[WS] Error:', message.error, message.details);
-          break;
-
-        default:
-          console.log('[WS] Unknown message type:', message);
+      // Error frame
+      if ('error' in raw) {
+        console.error('[WS] Server error:', raw['error']);
+        return;
       }
+
+      // Unified /ws/live payload
+      const msg = raw as unknown as LivePayload;
+      const isAttack = msg.is_attack ?? (msg.label === 'ATTACK');
+      const anomalyScore = msg.score ?? 0;
+
+      // Update stats
+      setStats(prev => ({
+        ...prev,
+        messagesProcessed: prev.messagesProcessed + 1,
+        currentScore: anomalyScore,
+        threshold: msg.threshold ?? prev.threshold,
+        attacksDetected: isAttack ? prev.attacksDetected + 1 : prev.attacksDetected,
+        networkStatus: isAttack ? 'threat' : 'secure',
+        lastUpdate: msg.timestamp,
+        uptime: Math.floor((Date.now() - startTime.current) / 1000),
+        isConnected: true,
+      }));
+
+      // Chart data point
+      const chartPoint: ChartDataPoint = {
+        timestamp: Date.now(),
+        time: formatTime(msg.timestamp),
+        score: anomalyScore,
+        isAttack,
+        canId: '—',
+      };
+      setChartData(prev => {
+        const next = [...prev, chartPoint];
+        return next.slice(-MAX_CHART_POINTS);
+      });
+
+      // Threat log entry for attacks
+      if (isAttack) {
+        const logEntry: ThreatLogEntry = {
+          id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+          timestamp: msg.timestamp,
+          localTime: formatTime(msg.timestamp),
+          anomalyScore,
+          canId: '—',
+          isAttack: true,
+          confidence: msg.confidence ?? 0,
+          // Hybrid pipeline fields
+          decision: msg.decision ?? 'attack',
+          stage: (msg.stage as 'rule' | 'ml' | 'legacy') ?? 'legacy',
+          attackType: msg.attack_type ?? null,
+          ruleId: msg.rule_id ?? null,
+          reason: msg.reason ?? null,
+          severity: msg.severity ?? null,
+          simulated: msg.simulated ?? false,
+          topFeatures: msg.top_features ?? [],
+        };
+        setThreatLog(prev => [logEntry, ...prev].slice(0, MAX_LOG_ENTRIES));
+      }
+
+      // Also feed lastPrediction for components that need PredictionMessage shape
+      setLastPrediction({
+        type: 'prediction',
+        anomaly_score: anomalyScore,
+        is_attack: isAttack,
+        threshold: msg.threshold ?? 0,
+        buffer_size: 0,
+        timestamp: msg.timestamp,
+        can_id: '—',
+        confidence: msg.confidence ?? 0,
+        is_unknown_id: false,
+      });
     } catch (error) {
       console.error('[WS] Failed to parse message:', error);
     }
-  }, [formatTime, generateId]);
+  }, [formatTime]);
 
   /**
    * Send a CAN frame to the backend via WebSocket
