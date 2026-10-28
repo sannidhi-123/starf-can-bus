@@ -112,12 +112,24 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (!response.ok) {
     const fallback = `Request failed with status ${response.status}`;
+    let message = fallback;
     try {
-      const err = (await response.json()) as { detail?: string };
-      throw new Error(err.detail ?? fallback);
+      const data = await response.json();
+      if (typeof data === 'string') {
+        message = data;
+      } else if (typeof data?.detail === 'string') {
+        message = data.detail;
+      } else if (Array.isArray(data?.detail) && data.detail.length > 0) {
+        message = data.detail
+          .map((item: any) => item.msg || item.message || JSON.stringify(item))
+          .join('; ');
+      } else if (data?.message) {
+        message = data.message;
+      }
     } catch {
-      throw new Error(fallback);
+      // JSON parse error, keep fallback
     }
+    throw new Error(message);
   }
 
   return (await response.json()) as T;
@@ -183,6 +195,25 @@ export const apiClient = {
         simulated: boolean;
       }>;
     }>(`/replay?class=${encodeURIComponent(className)}&start=${start}&count=${count}`),
+  resetSession: (resetStats = false) =>
+    requestJson<{ status: string; message: string }>(`/session/reset?reset_stats=${resetStats}`, {
+      method: 'POST',
+    }),
+  getDemoFrames: (className = 'Normal', count = 20) =>
+    requestJson<{
+      class: string;
+      count: number;
+      total_test_frames: number;
+      frames: Array<{
+        timestamp: number;
+        can_id: number;
+        can_id_hex: string;
+        dlc: number;
+        data_bytes: number[];
+        label: string;
+        simulated: boolean;
+      }>;
+    }>(`/demo?class=${encodeURIComponent(className)}&count=${count}`),
   getReportAssetUrl: (fileName: string) => `${API_BASE}/static/reports/${fileName}`,
   getWebSocketUrl: () => API_BASE.replace(/^http/, 'ws') + '/ws/live',
 };

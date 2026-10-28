@@ -276,8 +276,10 @@ def test_shap_top_features_ml_attack(pipeline, feature_names):
     """An ML-path attack must have exactly 5 top_features from the feature list."""
     import pandas as pd
 
-    if pipeline._shap_explainer is None:
+    if pipeline.shap_explainer is None:
         pytest.skip("SHAP explainer not initialised (shap not installed or parquet missing).")
+
+    assert pipeline.shap_explainer is pipeline._shap_explainer, "shap_explainer property should expose _shap_explainer"
 
     df = pd.read_parquet(PREPARED_PARQUET)
     # Use Spoof_Gear / Spoof_RPM frames — spoofed packets use valid CAN IDs and

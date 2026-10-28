@@ -57,6 +57,7 @@ export function AnalyzePage() {
 
     if (tokens.length === 0) {
       setError('At least one CAN ID is required.');
+      setResult(null);
       return;
     }
 
@@ -69,6 +70,7 @@ export function AnalyzePage() {
     } catch (submitError) {
       const message = submitError instanceof Error ? submitError.message : 'Inference pipeline execution failed.';
       setError(message);
+      setResult(null);
     } finally {
       setLoading(false);
     }
@@ -191,7 +193,23 @@ export function AnalyzePage() {
                 {loading ? 'Analyzing...' : 'Analyze Input'}
               </button>
 
-              {error ? <p style={{ marginTop: '10px', fontSize: '0.76rem', color: 'var(--color-danger)' }}>{error}</p> : null}
+              {error ? (
+                <div
+                  style={{
+                    marginTop: '12px',
+                    padding: '8px 12px',
+                    borderRadius: '6px',
+                    background: 'rgba(220,38,38,0.1)',
+                    border: '1px solid rgba(220,38,38,0.3)',
+                    color: '#DC2626',
+                    fontSize: '0.74rem',
+                    lineHeight: 1.4,
+                    fontFamily: 'JetBrains Mono, monospace',
+                  }}
+                >
+                  <strong>Validation Error:</strong> {error}
+                </div>
+              ) : null}
             </form>
           </section>
 
@@ -234,8 +252,28 @@ export function AnalyzePage() {
                 </div>
                 <div>
                   <div style={{ fontSize: '0.68rem', color: 'var(--color-text-muted)' }}>Severity</div>
-                  <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.8rem', color: 'var(--color-text-primary)' }}>
-                    {result?.severity ?? (result?.is_attack ? 'High' : 'Normal')}
+                  <div>
+                    {result?.severity ? (
+                      <span
+                        style={{
+                          fontSize: '0.65rem',
+                          fontWeight: 700,
+                          padding: '1px 6px',
+                          borderRadius: '4px',
+                          letterSpacing: '0.04em',
+                          textTransform: 'uppercase',
+                          background: result.severity === 'High' ? 'rgba(220,38,38,0.15)' : 'rgba(217,119,6,0.15)',
+                          color: result.severity === 'High' ? '#DC2626' : '#D97706',
+                          border: result.severity === 'High' ? '1px solid rgba(220,38,38,0.3)' : '1px solid rgba(217,119,6,0.3)',
+                        }}
+                      >
+                        {result.severity}
+                      </span>
+                    ) : (
+                      <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.8rem', color: 'var(--color-text-muted)' }}>
+                        {result?.is_attack ? 'High' : 'None'}
+                      </span>
+                    )}
                   </div>
                 </div>
                 <div>
@@ -245,6 +283,47 @@ export function AnalyzePage() {
                   </div>
                 </div>
               </div>
+
+              {/* Rule Violation Explanation */}
+              {result && (result.stage === 'rule' || result.rule_id) && result.reason && (
+                <div style={{ marginTop: '12px', padding: '8px 10px', borderRadius: '6px', background: 'rgba(217,119,6,0.1)', border: '1px solid rgba(217,119,6,0.3)', fontSize: '0.72rem', color: '#D97706', fontFamily: 'JetBrains Mono, monospace' }}>
+                  <strong>Rule [{result.rule_id}]:</strong> {result.reason}
+                </div>
+              )}
+
+              {/* SHAP Feature Contributions Explanation for ML Path */}
+              {result && result.top_features && result.top_features.length > 0 && (
+                <div style={{ marginTop: '12px', paddingTop: '10px', borderTop: '1px dashed var(--color-border)' }}>
+                  <div style={{ fontSize: '0.68rem', fontWeight: 600, color: 'var(--color-text-muted)', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                    Top SHAP Feature Attributions:
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '6px' }}>
+                    {result.top_features.slice(0, 5).map((feat, idx) => (
+                      <div
+                        key={idx}
+                        style={{
+                          padding: '4px 8px',
+                          borderRadius: '4px',
+                          background: 'var(--color-bg-base)',
+                          border: '1px solid var(--color-border)',
+                          fontSize: '0.7rem',
+                          fontFamily: 'JetBrains Mono, monospace',
+                        }}
+                      >
+                        <div style={{ color: 'var(--color-text-muted)', fontSize: '0.62rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {feat.feature}
+                        </div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '2px' }}>
+                          <span>val: {typeof feat.value === 'number' ? feat.value.toFixed(2) : feat.value}</span>
+                          <span style={{ color: feat.shap_value > 0 ? '#DC2626' : '#2563EB', fontWeight: 600 }}>
+                            {feat.shap_value > 0 ? `+${feat.shap_value.toFixed(3)}` : feat.shap_value.toFixed(3)}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           </section>
 

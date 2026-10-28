@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-10-27T20:16:00Z",
+  "timestamp": "2026-10-28T18:01:17Z",
   "max_test_per_class": 20000,
   "total_test_frames": 100000,
   "class_breakdown": {
@@ -320,41 +320,73 @@
       },
       "DoS": {
         "Normal": 0,
-        "Rule violation": 20000,
-        "DoS": 0,
+        "Rule violation": 0,
+        "DoS": 20000,
         "Fuzzy": 0,
         "Spoof_Gear": 0,
         "Spoof_RPM": 0
       },
       "Fuzzy": {
         "Normal": 0,
-        "Rule violation": 19719,
+        "Rule violation": 1,
         "DoS": 0,
-        "Fuzzy": 281,
+        "Fuzzy": 19999,
         "Spoof_Gear": 0,
         "Spoof_RPM": 0
       },
       "Spoof_Gear": {
         "Normal": 0,
-        "Rule violation": 19920,
+        "Rule violation": 0,
         "DoS": 0,
         "Fuzzy": 0,
-        "Spoof_Gear": 80,
+        "Spoof_Gear": 20000,
         "Spoof_RPM": 0
       },
       "Spoof_RPM": {
         "Normal": 0,
-        "Rule violation": 19956,
+        "Rule violation": 0,
         "DoS": 0,
         "Fuzzy": 0,
         "Spoof_Gear": 0,
-        "Spoof_RPM": 44
+        "Spoof_RPM": 20000
       }
     }
   },
   "ml_fine_grained_multiclass": {
     "Normal": {
       "precision": 0.9999,
+      "recall": 0.987,
+      "f1": 0.9935,
+      "support": 20000
+    },
+    "DoS": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "support": 20000
+    },
+    "Fuzzy": {
+      "precision": 0.9872,
+      "recall": 1.0,
+      "f1": 0.9935,
+      "support": 20000
+    },
+    "Spoof_Gear": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "support": 20000
+    },
+    "Spoof_RPM": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "support": 20000
+    }
+  },
+  "hybrid_fine_grained_multiclass": {
+    "Normal": {
+      "precision": 1.0,
       "recall": 0.987,
       "f1": 0.9935,
       "support": 20000

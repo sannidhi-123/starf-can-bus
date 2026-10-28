@@ -304,6 +304,11 @@ class HybridPipeline:
     def feature_names(self) -> List[str]:
         return list(self._feature_names)
 
+    @property
+    def shap_explainer(self) -> Optional[Any]:
+        """Return the initialized SHAP TreeExplainer, or None if unavailable."""
+        return self._shap_explainer
+
     # ------------------------------------------------------------------
     # Core prediction
     # ------------------------------------------------------------------
@@ -348,20 +353,41 @@ class HybridPipeline:
         triggered = engine.process_frame(timestamp=ts, can_id=cid)
 
         if triggered:
-            state.update(cid, ts)  # keep feature windows coherent
+            rep_count, iat_delta = state.update(cid, ts)  # keep feature windows coherent
             first  = triggered[0]
             rid    = first["rule_id"]
             reason = first["reason"]
             # When several rules fire for one frame, set severity to the highest among them (High > Medium)
             sev    = _highest_rule_severity(triggered)
+
+            # Evaluate Stage 2 ML classifier to identify specific attack type
+            feature_row = self._build_feature_row(cid, rep_count, iat_delta, dlc_val, padded)
+            X = np.array([feature_row], dtype=np.float32)
+            probs: np.ndarray = self._model.predict_proba(X)[0]
+            top_idx = int(np.argmax(probs))
+            ml_label = str(self._classes[top_idx])
+            ml_conf = float(probs[top_idx])
+
+            # If ML model recognizes a known attack type (DoS, Fuzzy, Spoof_Gear, Spoof_RPM)
+            top_features: List[Dict[str, Any]] = []
+            if ml_label != _NORMAL_LABEL:
+                attack_type = ml_label
+                if compute_shap and self._shap_explainer is not None:
+                    top_features = self._compute_shap_top_k(X, top_idx, feature_row)
+                specific_sev = _get_severity(attack_type, None)
+                if specific_sev and SEVERITY_ORDER.get(specific_sev, 0) > SEVERITY_ORDER.get(sev, 0):
+                    sev = specific_sev
+            else:
+                attack_type = "Rule violation"
+
             elapsed_ms = (time.perf_counter() - t_start) * 1000.0
             return {
                 # Legacy fields (preserved for backwards compatibility with earlier dashboard components)
                 "anomaly_score":      1.0,
                 "threshold":          1.0,
                 "label":              "ATTACK",
-                "attack_type":        "Rule violation",
-                "confidence":         1.0,
+                "attack_type":        attack_type,
+                "confidence":         round(ml_conf, 4) if attack_type != "Rule violation" else 1.0,
                 "is_attack":          True,
                 "processing_time_ms": round(elapsed_ms, 3),
                 "rules_triggered":    triggered,
@@ -373,7 +399,7 @@ class HybridPipeline:
                 "reason":     reason,
                 "severity":   sev,
                 "simulated":  simulated,
-                "top_features": [],
+                "top_features": top_features,
             }
 
         # ── 2. ML path ───────────────────────────────────────────────────

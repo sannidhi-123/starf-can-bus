@@ -212,7 +212,8 @@ def evaluate() -> Dict[str, Any]:
             if is_rule_hit:
                 hybrid_stages.append("rule")
                 hybrid_bin.append(1)
-                hybrid_cls.append("Rule violation")
+                # When rule fires, assign fine-grained ML attack class if recognized, else "Rule violation"
+                hybrid_cls.append(m_cls if m_cls != "Normal" else "Rule violation")
             else:
                 hybrid_stages.append("ml")
                 hybrid_bin.append(1 if m_cls != "Normal" else 0)
@@ -336,6 +337,9 @@ def evaluate() -> Dict[str, Any]:
     ml_multiclass_report = classification_report(
         y_true_all, ml_pred_cls_all, labels=CLASS_LABELS, output_dict=True, zero_division=0
     )
+    hybrid_multiclass_report = classification_report(
+        y_true_all, hybrid_pred_cls_all, labels=CLASS_LABELS, output_dict=True, zero_division=0
+    )
 
     # -----------------------------------------------------------------------
     # Build Final JSON Summary
@@ -358,6 +362,15 @@ def evaluate() -> Dict[str, Any]:
                 "recall": round(ml_multiclass_report[cls]["recall"], 4),
                 "f1": round(ml_multiclass_report[cls]["f1-score"], 4),
                 "support": int(ml_multiclass_report[cls]["support"]),
+            }
+            for cls in CLASS_LABELS
+        },
+        "hybrid_fine_grained_multiclass": {
+            cls: {
+                "precision": round(hybrid_multiclass_report[cls]["precision"], 4),
+                "recall": round(hybrid_multiclass_report[cls]["recall"], 4),
+                "f1": round(hybrid_multiclass_report[cls]["f1-score"], 4),
+                "support": int(hybrid_multiclass_report[cls]["support"]),
             }
             for cls in CLASS_LABELS
         },

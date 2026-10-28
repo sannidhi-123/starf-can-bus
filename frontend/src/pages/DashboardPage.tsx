@@ -92,12 +92,14 @@ function DashboardContent() {
   const { isAnalysisRunning } = useAnalysisControl();
 
   // Traffic Source selection
-  const [trafficSource, setTrafficSource] = useState<'replay' | 'simulated' | 'manual'>('replay');
+  const [trafficSource, setTrafficSource] = useState<'replay' | 'demo' | 'simulated' | 'manual'>('replay');
   const [replayClass, setReplayClass] = useState<AttackClass>('DoS');
   const [replayIndex, setReplayIndex] = useState(0);
   const [replayTotalAvailable, setReplayTotalAvailable] = useState(20000);
   const [streamSpeedMs, setStreamSpeedMs] = useState(600);
   const [isReplaying, setIsReplaying] = useState(false);
+  const [demoLoading, setDemoLoading] = useState(false);
+  const [demoNotice, setDemoNotice] = useState<string | null>(null);
 
   // Manual Frame form inputs
   const [manualCanId, setManualCanId] = useState('0x000');
@@ -313,6 +315,36 @@ function DashboardContent() {
   const handleResetSession = () => {
     setSessionFrames([]);
     frameIdCounter.current = 0;
+    apiClient.resetSession().catch(() => undefined);
+  };
+
+  const runDemoScenario = async (className: AttackClass) => {
+    setDemoLoading(true);
+    setDemoNotice(null);
+    handleResetSession();
+    try {
+      await apiClient.resetSession();
+      const demoData = await apiClient.getDemoFrames(className, 20);
+      if (!demoData || !demoData.frames || demoData.frames.length === 0) {
+        throw new Error(`No frames returned for class ${className}`);
+      }
+      for (const rawFrame of demoData.frames) {
+        const res = await apiClient.predictFrame({
+          timestamp: rawFrame.timestamp,
+          can_id: rawFrame.can_id,
+          dlc: rawFrame.dlc,
+          data_bytes: rawFrame.data_bytes,
+          simulated: false,
+        });
+        ingestFrame(res, rawFrame);
+      }
+      setDemoNotice(`Successfully loaded and analyzed ${demoData.frames.length} authentic held-out ${className} frames.`);
+    } catch (err: any) {
+      console.error('Demo execution error:', err);
+      setDemoNotice(`Demo error: ${err.message || 'Failed to fetch demo frames'}`);
+    } finally {
+      setDemoLoading(false);
+    }
   };
 
   // ---------------------------------------------------------------------------
@@ -428,11 +460,13 @@ function DashboardContent() {
             }}
           >
             <Database size={12} />
-            Traffic Source: {trafficSource === 'replay' ? `Dataset Replay (${replayClass})` : trafficSource === 'simulated' ? 'Simulated Generator' : 'Manual Frame'}
+            Traffic Source: {trafficSource === 'replay' ? `Dataset Replay (${replayClass})` : trafficSource === 'demo' ? 'Interactive Demo Mode' : trafficSource === 'simulated' ? 'Simulated Generator' : 'Manual Frame'}
           </span>
           <span style={{ fontSize: '0.75rem', color: 'var(--color-text-secondary)' }}>
             {trafficSource === 'replay'
               ? `Real held-out test frames from data/prepared.parquet (Offset: ${replayIndex}/${replayTotalAvailable})`
+              : trafficSource === 'demo'
+              ? 'Click any scenario below to stream authentic held-out test frames for that attack type'
               : trafficSource === 'simulated'
               ? 'TestDataGenerator active with simulated=true tags'
               : 'Single frame manual submission'}
@@ -455,6 +489,22 @@ function DashboardContent() {
             }}
           >
             Dataset Replay
+          </button>
+          <button
+            type="button"
+            onClick={() => setTrafficSource('demo')}
+            style={{
+              padding: '6px 12px',
+              borderRadius: '6px',
+              fontSize: '0.75rem',
+              fontWeight: 600,
+              cursor: 'pointer',
+              border: trafficSource === 'demo' ? '1px solid var(--color-primary)' : '1px solid var(--color-border)',
+              background: trafficSource === 'demo' ? 'var(--color-primary)' : 'var(--color-bg-base)',
+              color: trafficSource === 'demo' ? 'white' : 'var(--color-text-secondary)',
+            }}
+          >
+            Demo Mode
           </button>
           <button
             type="button"
@@ -511,16 +561,123 @@ function DashboardContent() {
         </div>
       </div>
 
-      {/* Sub-Panel for Selected Source Controls */}
+      {/* Sub-Panel: Demo Mode */}
+      {trafficSource === 'demo' && (
+        <div style={{ ...CARD_STYLE, padding: '14px 18px', marginBottom: '16px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+            <span style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--color-text-primary)' }}>
+              Select Scenario Demo (Authentic Held-Out HCRL Frames):
+            </span>
+            {demoLoading && (
+              <span style={{ fontSize: '0.75rem', color: 'var(--color-primary)', fontWeight: 600 }}>
+                Streaming and evaluating demo scenario frames...
+              </span>
+            )}
+          </div>
+          {demoNotice && (
+            <div
+              style={{
+                marginBottom: '10px',
+                padding: '6px 12px',
+                borderRadius: '6px',
+                fontSize: '0.75rem',
+                fontWeight: 600,
+                background: demoNotice.startsWith('Demo error') ? 'var(--color-danger-bg)' : 'var(--color-success-bg)',
+                color: demoNotice.startsWith('Demo error') ? 'var(--color-danger)' : 'var(--color-success)',
+                border: demoNotice.startsWith('Demo error') ? '1px solid rgba(220,38,38,0.3)' : '1px solid rgba(16,185,129,0.3)',
+              }}
+            >
+              {demoNotice}
+            </div>
+          )}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '10px' }}>
+            {[
+              { id: 'Normal' as AttackClass, title: 'Normal Baseline', desc: 'Legitimate CAN IDs (0x153, 0x220, etc.)', color: '#10B981' },
+              { id: 'DoS' as AttackClass, title: 'DoS Attack', desc: 'Dominant 0x000 injection burst', color: '#DC2626' },
+              { id: 'Fuzzy' as AttackClass, title: 'Fuzzy Attack', desc: 'Randomized IDs & payload noise', color: '#D97706' },
+              { id: 'Spoof_Gear' as AttackClass, title: 'Spoof Gear', desc: 'Transmission gear telemetry (0x43F)', color: '#2563EB' },
+              { id: 'Spoof_RPM' as AttackClass, title: 'Spoof RPM', desc: 'Engine speed telemetry (0x316)', color: '#7C3AED' },
+            ].map((scen) => (
+              <div
+                key={scen.id}
+                style={{
+                  border: `1px solid var(--color-border)`,
+                  borderLeft: `4px solid ${scen.color}`,
+                  borderRadius: '8px',
+                  padding: '10px 12px',
+                  background: 'var(--color-bg-base)',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  justifyContent: 'space-between',
+                  gap: '8px',
+                }}
+              >
+                <div>
+                  <div style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--color-text-primary)' }}>
+                    {scen.title}
+                  </div>
+                  <div style={{ fontSize: '0.68rem', color: 'var(--color-text-muted)', marginTop: '2px' }}>
+                    {scen.desc}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  disabled={demoLoading}
+                  onClick={() => runDemoScenario(scen.id)}
+                  style={{
+                    padding: '5px 10px',
+                    borderRadius: '6px',
+                    fontSize: '0.72rem',
+                    fontWeight: 600,
+                    cursor: demoLoading ? 'not-allowed' : 'pointer',
+                    background: scen.color,
+                    color: 'white',
+                    border: 'none',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '4px',
+                    opacity: demoLoading ? 0.6 : 1,
+                  }}
+                >
+                  <Play size={10} /> Run {scen.id} Demo
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Sub-Panel: Dataset Replay */}
       {trafficSource === 'replay' && (
         <div style={{ ...CARD_STYLE, padding: '12px 18px', marginBottom: '16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
             <span style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--color-text-primary)' }}>Target Attack Class:</span>
             <select
               value={replayClass}
-              onChange={(e) => {
-                setReplayClass(e.target.value as AttackClass);
+              onChange={async (e) => {
+                const newClass = e.target.value as AttackClass;
+                setReplayClass(newClass);
                 setReplayIndex(0);
+                handleResetSession();
+                try {
+                  await apiClient.resetSession();
+                  const data = await apiClient.getReplayFrames(newClass, 0, 10);
+                  setReplayTotalAvailable(data.total_test_frames);
+                  setReplayIndex(10);
+                  for (const rawFrame of data.frames) {
+                    const res = await apiClient.predictFrame({
+                      timestamp: rawFrame.timestamp,
+                      can_id: rawFrame.can_id,
+                      dlc: rawFrame.dlc,
+                      data_bytes: rawFrame.data_bytes,
+                      simulated: false,
+                    });
+                    ingestFrame(res, rawFrame);
+                  }
+                } catch (err) {
+                  console.error('Failed to switch replay class:', err);
+                }
               }}
               style={{
                 fontSize: '0.78rem',
@@ -1023,8 +1180,9 @@ function DashboardContent() {
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
                         {/* Time */}
+                        {/* Time & Raw CAN timestamp */}
                         <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>
-                          {alert.time}
+                          {alert.time} (ts: {alert.timestamp.toFixed(4)}s)
                         </span>
 
                         {/* CAN ID */}
@@ -1094,8 +1252,8 @@ function DashboardContent() {
                           Confidence: {(alert.confidence * 100).toFixed(1)}%
                         </span>
 
-                        {/* Expandable SHAP button for ML alerts */}
-                        {!isRuleStage && alert.topFeatures && alert.topFeatures.length > 0 && (
+                        {/* Expandable SHAP button */}
+                        {alert.topFeatures && alert.topFeatures.length > 0 && (
                           <button
                             type="button"
                             onClick={() => setExpandedShapId(isExpanded ? null : alert.id)}
@@ -1125,8 +1283,8 @@ function DashboardContent() {
                       </div>
                     )}
 
-                    {/* Expandable SHAP Table for ML Alerts */}
-                    {!isRuleStage && isExpanded && alert.topFeatures && (
+                    {/* Expandable SHAP Table */}
+                    {isExpanded && alert.topFeatures && alert.topFeatures.length > 0 && (
                       <div style={{ marginTop: '10px', paddingTop: '8px', borderTop: '1px dashed var(--color-border)' }}>
                         <div style={{ fontSize: '0.68rem', fontWeight: 600, color: 'var(--color-text-muted)', marginBottom: '4px' }}>
                           Top 5 SHAP Feature Contributions:

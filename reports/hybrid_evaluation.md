@@ -1,6 +1,6 @@
 # CAN Bus IDS — Held-Out Evaluation Report
 
-**Evaluation Date:** 2026-10-27 20:16:00 UTC  
+**Evaluation Date:** 2026-10-28 18:01:17 UTC  
 **Dataset:** `data/prepared.parquet`  
 **Evaluation Protocol:** Chronological 80/20 held-out test block per class (last 20% in timestamp order), contiguous stream processing with isolated state per class.  
 **Per-Class Evaluation Cap:** 20,000 frames (Total: 100,000 frames across 5 classes).  
@@ -79,10 +79,10 @@
 | True Class | Normal | Rule violation | DoS | Fuzzy | Spoof_Gear | Spoof_RPM | Total |
 |:---| ---: | ---: | ---: | ---: | ---: | ---: | ---:|
 | **Normal** | 19,741 | 0 | 0 | 259 | 0 | 0 | 20,000 |
-| **DoS** | 0 | 20,000 | 0 | 0 | 0 | 0 | 20,000 |
-| **Fuzzy** | 0 | 19,719 | 0 | 281 | 0 | 0 | 20,000 |
-| **Spoof_Gear** | 0 | 19,920 | 0 | 0 | 80 | 0 | 20,000 |
-| **Spoof_RPM** | 0 | 19,956 | 0 | 0 | 0 | 44 | 20,000 |
+| **DoS** | 0 | 0 | 20,000 | 0 | 0 | 0 | 20,000 |
+| **Fuzzy** | 0 | 1 | 0 | 19,999 | 0 | 0 | 20,000 |
+| **Spoof_Gear** | 0 | 0 | 0 | 0 | 20,000 | 0 | 20,000 |
+| **Spoof_RPM** | 0 | 0 | 0 | 0 | 0 | 20,000 | 20,000 |
 
 ---
 

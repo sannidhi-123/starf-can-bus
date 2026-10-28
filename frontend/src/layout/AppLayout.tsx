@@ -334,6 +334,20 @@ export function AppLayout({ children }: AppLayoutProps) {
               </span>
               <span>Model: {health ? (health.model || 'Random Forest + rules') : 'unknown'}</span>
               <span>|</span>
+              <span>Rules: {health?.rules_count ?? 0}</span>
+              <span>|</span>
+              <span>
+                SHAP:{' '}
+                <span
+                  style={{
+                    color: health?.shap_available ? 'var(--color-success)' : 'var(--color-text-muted)',
+                    fontWeight: 600,
+                  }}
+                >
+                  {health?.shap_available ? 'ACTIVE' : 'OFFLINE'}
+                </span>
+              </span>
+              <span>|</span>
               <span>Device: {health?.device ?? 'n/a'}</span>
             </div>
           </header>

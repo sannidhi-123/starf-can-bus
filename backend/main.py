@@ -70,11 +70,39 @@ UVICORN_CONFIG = {
 }
 
 
+def parse_can_id_value(val: Union[int, str]) -> int:
+    """Parse CAN arbitration ID from int or hex/decimal string.
+
+    Accepts standard hex (e.g. '0x18F', '0x000', '18F') or decimal (e.g. 399, '399').
+    Valid CAN IDs must be between 0 and 0x1FFFFFFF (29-bit identifier max).
+    """
+    if isinstance(val, int):
+        if val < 0 or val > 0x1FFFFFFF:
+            raise ValueError(f"CAN arbitration ID {val} out of range (must be between 0x000 and 0x1FFFFFFF)")
+        return val
+    token = str(val).strip()
+    if not token:
+        raise ValueError("CAN arbitration ID cannot be empty")
+    try:
+        if token.startswith(("0x", "0X")):
+            cid = int(token, 16)
+        elif any(c in "abcdefABCDEF" for c in token):
+            cid = int(token, 16)
+        else:
+            cid = int(token, 10)
+    except ValueError as exc:
+        raise ValueError(f"Invalid CAN arbitration ID '{token}': must be a valid hex or decimal integer") from exc
+
+    if cid < 0 or cid > 0x1FFFFFFF:
+        raise ValueError(f"CAN arbitration ID '{token}' out of range (must be between 0x000 and 0x1FFFFFFF)")
+    return cid
+
+
 class PredictRequest(BaseModel):
-    # Optional sequence (legacy DistilBERT)
+    # Optional sequence (supports single or multiple CAN IDs for hybrid pipeline; 64 IDs for DistilBERT fallback)
     sequence: Optional[List[str]] = Field(
         default=None,
-        description="List of 64 hex CAN IDs (legacy)",
+        description="List of hex or decimal CAN arbitration IDs (1 to 1000 items)",
     )
     return_details: bool = Field(default=True)
 
@@ -93,11 +121,15 @@ class PredictRequest(BaseModel):
     def validate_sequence(cls, value: Optional[List[str]]) -> Optional[List[str]]:
         if value is None:
             return value
-        if len(value) != WINDOW_SIZE:
-            raise ValueError(f"sequence must contain exactly {WINDOW_SIZE} CAN IDs")
+        if len(value) == 0:
+            raise ValueError("sequence cannot be empty; must contain at least one CAN ID")
+        if len(value) > 1000:
+            raise ValueError(f"sequence contains too many items (max 1000, got {len(value)})")
         for item in value:
-            if not str(item).strip():
+            t = str(item).strip()
+            if not t:
                 raise ValueError("sequence entries cannot be empty")
+            parse_can_id_value(t)
         return value
 
 
@@ -220,6 +252,15 @@ class DetectionStats:
             "last_prediction": self.last_prediction,
             "uptime_seconds": round(uptime, 2),
         }
+
+    def reset(self) -> None:
+        self.total_analyzed = 0
+        self.attacks_detected = 0
+        self.normals_detected = 0
+        self.score_sum = 0.0
+        self.attack_type_counts = Counter()
+        self.last_prediction = {}
+        self.started_at = datetime.now(timezone.utc)
 
 
 runtime_state = RuntimeState()
@@ -775,7 +816,10 @@ async def health() -> Dict[str, Any]:
     shap_available = False
     if pipeline_loaded:
         rules_count = len(runtime_state.pipeline.whitelist) if hasattr(runtime_state.pipeline, "whitelist") else 0
-        shap_available = getattr(runtime_state.pipeline, "shap_explainer", None) is not None
+        shap_available = (
+            getattr(runtime_state.pipeline, "shap_explainer", None) is not None
+            or getattr(runtime_state.pipeline, "_shap_explainer", None) is not None
+        )
 
     return {
         "status": "online",
@@ -823,6 +867,37 @@ def _get_replay_test_block(class_name: str) -> pd.DataFrame:
     return test_block
 
 
+def _parse_b(val: Any) -> int:
+    if pd.isna(val) or val == "" or val is None:
+        return 0
+    if isinstance(val, (int, np.integer)):
+        return int(val) & 0xFF
+    val_str = str(val).strip().lower()
+    if not val_str:
+        return 0
+    try:
+        return int(val_str, 16) if len(val_str) <= 2 else int(val_str)
+    except ValueError:
+        return 0
+
+
+def _parse_cid(val: Any) -> int:
+    if pd.isna(val) or val == "" or val is None:
+        return 0
+    if isinstance(val, (int, np.integer)):
+        return int(val)
+    val_str = str(val).strip()
+    try:
+        if val_str.startswith("0x") or val_str.startswith("0X"):
+            return int(val_str, 16)
+        return int(val_str)
+    except ValueError:
+        try:
+            return int(val_str, 16)
+        except ValueError:
+            return 0
+
+
 @app.get("/replay")
 async def replay_frames(
     class_name: str = Query(default="Normal", alias="class"),
@@ -847,35 +922,6 @@ async def replay_frames(
     end_clamped = min(start_clamped + count, total_test_frames)
     slice_df = test_block.iloc[start_clamped:end_clamped]
 
-    def _parse_b(val: Any) -> int:
-        if pd.isna(val) or val == "" or val is None:
-            return 0
-        if isinstance(val, (int, np.integer)):
-            return int(val) & 0xFF
-        val_str = str(val).strip().lower()
-        if not val_str:
-            return 0
-        try:
-            return int(val_str, 16) if len(val_str) <= 2 else int(val_str)
-        except ValueError:
-            return 0
-
-    def _parse_cid(val: Any) -> int:
-        if pd.isna(val) or val == "" or val is None:
-            return 0
-        if isinstance(val, (int, np.integer)):
-            return int(val)
-        val_str = str(val).strip()
-        try:
-            if val_str.startswith("0x") or val_str.startswith("0X"):
-                return int(val_str, 16)
-            return int(val_str)
-        except ValueError:
-            try:
-                return int(val_str, 16)
-            except ValueError:
-                return 0
-
     frames = []
     for _, row in slice_df.iterrows():
         cid = _parse_cid(row["can_id"])
@@ -895,6 +941,59 @@ async def replay_frames(
         "start": start_clamped,
         "count": len(frames),
         "total_test_frames": total_test_frames,
+        "frames": frames,
+    }
+
+
+@app.post("/session/reset")
+async def reset_session(reset_stats: bool = Query(default=False)) -> Dict[str, str]:
+    """Reset the server-side REST streaming state and rule engine (and optionally stats)."""
+    global _rest_stream_state, _rest_rule_engine
+    if runtime_state.pipeline is not None:
+        _rest_stream_state = runtime_state.pipeline.new_stream_state()
+        _rest_rule_engine = runtime_state.pipeline.new_rule_state()
+    if reset_stats:
+        stats_state.reset()
+    return {"status": "ok", "message": "Session state and rule engine reset."}
+
+
+@app.get("/demo")
+async def demo_frames(
+    class_name: str = Query(default="Normal", alias="class"),
+    count: int = Query(default=20, ge=1, le=100),
+) -> Dict[str, Any]:
+    """Return a curated batch of genuine held-out dataset frames for demo mode."""
+    valid_classes = ["Normal", "DoS", "Fuzzy", "Spoof_Gear", "Spoof_RPM"]
+    if class_name not in valid_classes:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid class '{class_name}'. Must be one of: {valid_classes}",
+        )
+
+    try:
+        test_block = _get_replay_test_block(class_name)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    slice_df = test_block.iloc[:min(count, len(test_block))]
+    frames = []
+    for _, row in slice_df.iterrows():
+        cid = _parse_cid(row["can_id"])
+        data_bytes = [_parse_b(row.get(f"d{i}", 0)) for i in range(8)]
+        frames.append({
+            "timestamp": float(row["timestamp"]),
+            "can_id": cid,
+            "can_id_hex": f"0x{cid:03X}",
+            "dlc": int(row["dlc"]) if not pd.isna(row.get("dlc")) else len(data_bytes),
+            "data_bytes": data_bytes,
+            "label": str(row["label"]),
+            "simulated": False,
+        })
+
+    return {
+        "class": class_name,
+        "count": len(frames),
+        "total_test_frames": len(test_block),
         "frames": frames,
     }
 
@@ -1058,9 +1157,7 @@ async def predict(payload: PredictRequest) -> PredictResponse:
     """
     # 1. Frame-based prediction (timestamp or can_id provided)
     if payload.can_id is not None or (payload.sequence is None and payload.timestamp is not None):
-        cid = payload.can_id if payload.can_id is not None else 0
-        if isinstance(cid, str):
-            cid = int(cid, 16) if cid.startswith(("0x", "0X")) or not cid.isdigit() else int(cid)
+        cid = parse_can_id_value(payload.can_id) if payload.can_id is not None else 0
         ts = payload.timestamp if payload.timestamp is not None else time.time()
         dbytes = payload.data_bytes if payload.data_bytes is not None else [0] * 8
         result = _run_hybrid_prediction(
@@ -1072,16 +1169,13 @@ async def predict(payload: PredictRequest) -> PredictResponse:
         )
         return PredictResponse(**result)
 
-    # 2. Sequence-based prediction (legacy sequence provided)
+    # 2. Sequence-based prediction (legacy sequence or multiple IDs provided)
     if payload.sequence is not None:
         if runtime_state.pipeline_loaded and runtime_state.pipeline is not None:
             last_res = None
             base_ts = time.time() - len(payload.sequence) * 0.001
             for i, token_str in enumerate(payload.sequence):
-                try:
-                    cid = int(token_str, 16) if token_str.startswith(("0x", "0X")) or not token_str.isdigit() else int(token_str)
-                except ValueError:
-                    cid = 0
+                cid = parse_can_id_value(token_str)
                 ts = base_ts + i * 0.001
                 last_res = _run_hybrid_prediction(
                     timestamp=ts,
@@ -1095,6 +1189,11 @@ async def predict(payload: PredictRequest) -> PredictResponse:
 
         # Fallback to DistilBERT legacy path only when hybrid pipeline is not loaded
         if runtime_state.loaded:
+            if len(payload.sequence) != WINDOW_SIZE:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"DistilBERT sequence model requires exactly {WINDOW_SIZE} CAN IDs (got {len(payload.sequence)})",
+                )
             try:
                 tokens, unknown_count = tokenize_sequence(payload.sequence)
                 result = predict_from_tokens(tokens, unknown_count, payload.return_details)
@@ -1167,9 +1266,7 @@ class FramePredictRequest(BaseModel):
     @field_validator("can_id", mode="before")
     @classmethod
     def parse_can_id(cls, v: Any) -> int:
-        if isinstance(v, str):
-            return int(v, 16) if v.startswith(("0x", "0X")) or not v.isdigit() else int(v)
-        return int(v)
+        return parse_can_id_value(v)
 
 
 @app.post("/predict/frame")
