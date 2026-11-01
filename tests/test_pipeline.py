@@ -289,7 +289,7 @@ def test_shap_top_features_ml_attack(pipeline, feature_names):
     found_ml_attack = None
     for chunk_start in range(0, min(500, len(attack_df)), 20):
         chunk = attack_df.iloc[chunk_start:chunk_start+20]
-        results = pipeline.predict_dataframe(chunk)
+        results = pipeline.predict_dataframe(chunk, compute_shap=True)
         for res in results:
             if res["stage"] == "ml" and res["is_attack"]:
                 found_ml_attack = res

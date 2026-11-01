@@ -17,6 +17,9 @@ export type PredictionResponse = {
   severity?: 'High' | 'Medium' | null;
   simulated?: boolean;
   top_features?: Array<{ feature: string; value: number; shap_value: number }>;
+  ml_prediction?: string | null;
+  ml_confidence?: number | null;
+  shap_target_class?: string | null;
   can_id?: number;
   can_id_hex?: string;
   timestamp?: number | string;
@@ -40,6 +43,9 @@ export type LivePayload = {
   severity?: 'High' | 'Medium' | null;
   simulated?: boolean;
   top_features?: Array<{ feature: string; value: number; shap_value: number }>;
+  ml_prediction?: string | null;
+  ml_confidence?: number | null;
+  shap_target_class?: string | null;
 };
 
 
@@ -216,4 +222,36 @@ export const apiClient = {
     }>(`/demo?class=${encodeURIComponent(className)}&count=${count}`),
   getReportAssetUrl: (fileName: string) => `${API_BASE}/static/reports/${fileName}`,
   getWebSocketUrl: () => API_BASE.replace(/^http/, 'ws') + '/ws/live',
+  getBaselineExplanation: () =>
+    requestJson<{
+      frame: {
+        timestamp: number;
+        can_id: number;
+        can_id_hex: string;
+        dlc: number;
+        data_bytes: number[];
+        label: string;
+      };
+      prediction: PredictionResponse;
+    }>('/explain/baseline'),
+  explainFrame: (payload: {
+    timestamp?: number;
+    can_id: number | string;
+    dlc?: number;
+    data_bytes?: number[];
+    target_class?: string;
+  }) =>
+    requestJson<{
+      can_id: number;
+      can_id_hex: string;
+      predicted_class: string;
+      confidence: number;
+      explained_class: string;
+      probabilities: Record<string, number>;
+      top_features: Array<{ feature: string; value: number; shap_value: number }>;
+      feature_row: Record<string, number>;
+    }>('/explain/frame', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
 };

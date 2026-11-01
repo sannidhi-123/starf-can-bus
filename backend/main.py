@@ -159,6 +159,9 @@ class PredictResponse(BaseModel):
     top_features: Optional[List[Dict[str, Any]]] = None
     rules_triggered: Optional[List[Any]] = None
     pipeline_path: Optional[str] = None
+    ml_prediction: Optional[str] = None
+    ml_confidence: Optional[float] = None
+    shap_target_class: Optional[str] = None
 
 
 class BatchPredictRequest(BaseModel):
@@ -1281,6 +1284,82 @@ async def predict_frame(payload: FramePredictRequest) -> Dict[str, Any]:
     )
 
 
+class ExplainFrameRequest(BaseModel):
+    timestamp: float = Field(default_factory=time.time)
+    can_id: Union[int, str] = Field(..., description="CAN arbitration ID (int or hex)")
+    dlc: int = Field(default=8, ge=0, le=8)
+    data_bytes: List[int] = Field(default_factory=lambda: [0] * 8, max_length=8)
+    target_class: Optional[str] = Field(default=None, description="Class to explain ('Normal', 'DoS', 'Fuzzy', 'Spoof_Gear', 'Spoof_RPM')")
+
+    @field_validator("can_id", mode="before")
+    @classmethod
+    def parse_can_id(cls, v: Any) -> int:
+        return parse_can_id_value(v)
+
+
+@app.get("/explain/baseline")
+async def explain_baseline() -> Dict[str, Any]:
+    """Return a real baseline Normal frame evaluated with genuine SHAP attributions."""
+    if not runtime_state.pipeline_loaded or runtime_state.pipeline is None:
+        raise HTTPException(status_code=503, detail="HybridPipeline not loaded")
+
+    try:
+        test_block = _get_replay_test_block("Normal")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    if test_block.empty:
+        raise HTTPException(status_code=404, detail="Normal test block unavailable")
+
+    row = test_block.iloc[0]
+    cid = _parse_cid(row["can_id"])
+    data_bytes = [_parse_b(row.get(f"d{i}", 0)) for i in range(8)]
+    ts = float(row["timestamp"])
+    dlc = int(row["dlc"]) if not pd.isna(row.get("dlc")) else len(data_bytes)
+
+    stream_state, rule_engine = _get_rest_pipeline_state()
+    res = runtime_state.pipeline.predict_frame(
+        timestamp=ts,
+        can_id=cid,
+        dlc=dlc,
+        data_bytes=data_bytes,
+        state=stream_state,
+        rule_engine=rule_engine,
+        simulated=False,
+        compute_shap=True,
+    )
+
+    return {
+        "frame": {
+            "timestamp": ts,
+            "can_id": cid,
+            "can_id_hex": f"0x{cid:03X}",
+            "dlc": dlc,
+            "data_bytes": data_bytes,
+            "label": "Normal",
+        },
+        "prediction": res,
+    }
+
+
+@app.post("/explain/frame")
+async def explain_frame_endpoint(payload: ExplainFrameRequest) -> Dict[str, Any]:
+    """Compute complete TreeSHAP explanations for a single frame and optional target class."""
+    if not runtime_state.pipeline_loaded or runtime_state.pipeline is None:
+        raise HTTPException(status_code=503, detail="HybridPipeline not loaded")
+
+    stream_state, _ = _get_rest_pipeline_state()
+    return runtime_state.pipeline.explain_frame(
+        timestamp=payload.timestamp,
+        can_id=payload.can_id,
+        dlc=payload.dlc,
+        data_bytes=payload.data_bytes,
+        target_class=payload.target_class,
+        state=stream_state,
+    
+    )
+
+
 @app.websocket("/ws/live")
 async def ws_live(websocket: WebSocket) -> None:
     """Live streaming WebSocket endpoint.
@@ -1380,6 +1459,9 @@ async def ws_live(websocket: WebSocket) -> None:
                     "severity":        result["severity"],
                     "simulated":       result["simulated"],
                     "top_features":    result["top_features"],
+                    "ml_prediction":   result.get("ml_prediction"),
+                    "ml_confidence":   result.get("ml_confidence"),
+                    "shap_target_class": result.get("shap_target_class"),
                 }
             else:
                 # ---- Legacy DistilBERT path (only when pipeline not loaded) ----

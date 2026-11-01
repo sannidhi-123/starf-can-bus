@@ -400,6 +400,9 @@ class HybridPipeline:
                 "severity":   sev,
                 "simulated":  simulated,
                 "top_features": top_features,
+                "ml_prediction": ml_label,
+                "ml_confidence": round(ml_conf, 4),
+                "shap_target_class": ml_label if top_features else None,
             }
 
         # ── 2. ML path ───────────────────────────────────────────────────
@@ -421,9 +424,9 @@ class HybridPipeline:
         normal_idx    = self._normal_class_idx()
         anomaly_score = round(float(1.0 - probs[normal_idx]), 6)
 
-        # SHAP for ML-path attacks only
+        # SHAP for ML-path (computes for predicted class when compute_shap is requested)
         top_features: List[Dict[str, Any]] = []
-        if compute_shap and is_attack and self._shap_explainer is not None:
+        if compute_shap and self._shap_explainer is not None:
             top_features = self._compute_shap_top_k(X, top_idx, feature_row)
 
         elapsed_ms = (time.perf_counter() - t_start) * 1000.0
@@ -447,6 +450,9 @@ class HybridPipeline:
             "severity":    sev,
             "simulated":   simulated,
             "top_features": top_features,
+            "ml_prediction": ml_label,
+            "ml_confidence": round(confidence, 4),
+            "shap_target_class": ml_label if top_features else None,
         }
 
     # ------------------------------------------------------------------
@@ -490,6 +496,7 @@ class HybridPipeline:
         self,
         df: pd.DataFrame,
         simulated: bool = False,
+        compute_shap: bool = False,
     ) -> List[Dict[str, Any]]:
         """Run predict_frame over every row of a time-ordered DataFrame.
 
@@ -511,9 +518,61 @@ class HybridPipeline:
                 state=state,
                 rule_engine=engine,
                 simulated=simulated,
+                compute_shap=compute_shap,
             )
             results.append(res)
         return results
+
+    def explain_frame(
+        self,
+        timestamp: float,
+        can_id: int,
+        dlc: int,
+        data_bytes: List[int],
+        target_class: Optional[str] = None,
+        state: Optional[StreamState] = None,
+    ) -> Dict[str, Any]:
+        """Compute genuine TreeSHAP feature attributions for a given frame and target class."""
+        cid = int(can_id)
+        ts = float(timestamp)
+        dlc_val = int(dlc)
+        padded = (list(data_bytes) + [0] * 8)[:8]
+        padded = [int(b) & 0xFF for b in padded]
+
+        st = state if state is not None else self.new_stream_state()
+        rep_count, iat_delta = st.update(cid, ts)
+
+        feature_row = self._build_feature_row(cid, rep_count, iat_delta, dlc_val, padded)
+        X = np.array([feature_row], dtype=np.float32)
+
+        probs = self._model.predict_proba(X)[0]
+        top_idx = int(np.argmax(probs))
+        pred_label = str(self._classes[top_idx])
+        confidence = float(probs[top_idx])
+
+        if target_class is not None and target_class in self._classes:
+            explain_idx = self._classes.index(target_class)
+            explain_class = target_class
+        else:
+            explain_idx = top_idx
+            explain_class = pred_label
+
+        top_k = []
+        if self._shap_explainer is not None:
+            top_k = self._compute_shap_top_k(X, explain_idx, feature_row)
+
+        prob_dict = {str(self._classes[i]): round(float(probs[i]), 4) for i in range(len(self._classes))}
+
+        return {
+            "can_id": cid,
+            "can_id_hex": f"0x{cid:03X}",
+            "predicted_class": pred_label,
+            "confidence": round(confidence, 4),
+            "explained_class": explain_class,
+            "probabilities": prob_dict,
+            "top_features": top_k,
+            "feature_row": {self._feature_names[i]: float(feature_row[i]) for i in range(len(self._feature_names))},
+        }
 
     # ------------------------------------------------------------------
     # Private helpers

@@ -156,7 +156,7 @@ export function AppLayout({ children }: AppLayoutProps) {
             }}
           >
             <Link
-              to="/dashboard"
+              to="/"
               style={{
                 textDecoration: 'none',
                 display: 'flex',

@@ -25,6 +25,7 @@ import {
 import { apiClient, type PredictionResponse } from '../api/client';
 import { AppLayout, useAnalysisControl } from '../layout/AppLayout';
 import { AdvancedAnalytics, type FrameTelemetry } from '../components/AdvancedAnalytics';
+import { ShapExplanationView } from '../components/ShapExplanationView';
 import { testDataGenerator } from '../utils/testDataGenerator';
 
 const MAX_SESSION_FRAMES = 120;
@@ -111,6 +112,7 @@ function DashboardContent() {
   // Session state (evaluated responses in this session)
   const [sessionFrames, setSessionFrames] = useState<SessionFrame[]>([]);
   const [expandedShapId, setExpandedShapId] = useState<number | null>(null);
+  const [baselineNormalFrame, setBaselineNormalFrame] = useState<SessionFrame | null>(null);
 
   const frameIdCounter = useRef(0);
   const replayIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -160,6 +162,10 @@ function DashboardContent() {
       topFeatures: result.top_features ?? [],
     };
 
+    if (!isAttack && frame.topFeatures.length > 0) {
+      setBaselineNormalFrame(frame);
+    }
+
     setSessionFrames((prev) => [...prev, frame].slice(-MAX_SESSION_FRAMES));
   };
 
@@ -208,6 +214,34 @@ function DashboardContent() {
   // Initial replay sample on first mount so the user has immediate real data
   useEffect(() => {
     let active = true;
+    // Fetch baseline normal frame for comparison view
+    apiClient
+      .getBaselineExplanation()
+      .then((data) => {
+        if (!active) return;
+        const p = data.prediction;
+        const bFrame: SessionFrame = {
+          id: -1,
+          time: new Date(data.frame.timestamp * 1000).toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+          timestamp: data.frame.timestamp,
+          canId: String(data.frame.can_id),
+          canIdHex: data.frame.can_id_hex,
+          dlc: data.frame.dlc,
+          dataBytes: data.frame.data_bytes,
+          decision: 'normal',
+          stage: 'ml',
+          attackType: 'Normal',
+          severity: null,
+          confidence: p.confidence ?? 0.85,
+          ruleId: null,
+          reason: null,
+          simulated: false,
+          topFeatures: p.top_features ?? [],
+        };
+        setBaselineNormalFrame(bFrame);
+      })
+      .catch(() => undefined);
+
     apiClient
       .getReplayFrames('DoS', 0, 12)
       .then(async (data) => {
@@ -1252,67 +1286,42 @@ function DashboardContent() {
                           Confidence: {(alert.confidence * 100).toFixed(1)}%
                         </span>
 
-                        {/* Expandable SHAP button */}
-                        {alert.topFeatures && alert.topFeatures.length > 0 && (
-                          <button
-                            type="button"
-                            onClick={() => setExpandedShapId(isExpanded ? null : alert.id)}
-                            style={{
-                              padding: '2px 8px',
-                              borderRadius: '4px',
-                              border: '1px solid var(--color-border)',
-                              background: 'var(--color-bg-base)',
-                              color: 'var(--color-primary)',
-                              fontSize: '0.7rem',
-                              cursor: 'pointer',
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: '4px',
-                            }}
-                          >
-                            SHAP (Top 5) {isExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-                          </button>
-                        )}
+                        {/* Expandable SHAP & Cause button */}
+                        <button
+                          type="button"
+                          onClick={() => setExpandedShapId(isExpanded ? null : alert.id)}
+                          style={{
+                            padding: '3px 10px',
+                            borderRadius: '4px',
+                            border: '1px solid var(--color-border)',
+                            background: isExpanded ? 'var(--color-primary-light)' : 'var(--color-bg-base)',
+                            color: 'var(--color-primary)',
+                            fontSize: '0.7rem',
+                            fontWeight: 600,
+                            cursor: 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '4px',
+                          }}
+                        >
+                          SHAP &amp; Cause {isExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                        </button>
                       </div>
                     </div>
 
-                    {/* Rule Stage Reason */}
-                    {isRuleStage && alert.reason && (
+                    {/* Quick Rule Reason when collapsed */}
+                    {isRuleStage && alert.reason && !isExpanded && (
                       <div style={{ marginTop: '6px', fontSize: '0.72rem', color: '#C2410C', fontFamily: 'JetBrains Mono, monospace' }}>
                         Rule [{alert.ruleId}]: {alert.reason}
                       </div>
                     )}
 
-                    {/* Expandable SHAP Table */}
-                    {isExpanded && alert.topFeatures && alert.topFeatures.length > 0 && (
-                      <div style={{ marginTop: '10px', paddingTop: '8px', borderTop: '1px dashed var(--color-border)' }}>
-                        <div style={{ fontSize: '0.68rem', fontWeight: 600, color: 'var(--color-text-muted)', marginBottom: '4px' }}>
-                          Top 5 SHAP Feature Contributions:
-                        </div>
-                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '6px' }}>
-                          {alert.topFeatures.slice(0, 5).map((feat, idx) => (
-                            <div
-                              key={idx}
-                              style={{
-                                padding: '4px 8px',
-                                borderRadius: '4px',
-                                background: 'var(--color-bg-base)',
-                                border: '1px solid var(--color-border)',
-                                fontSize: '0.7rem',
-                                fontFamily: 'JetBrains Mono, monospace',
-                              }}
-                            >
-                              <div style={{ color: 'var(--color-text-muted)', fontSize: '0.62rem' }}>{feat.feature}</div>
-                              <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '2px' }}>
-                                <span>Val: {feat.value}</span>
-                                <span style={{ color: feat.shap_value > 0 ? '#DC2626' : '#2563EB', fontWeight: 600 }}>
-                                  {feat.shap_value > 0 ? `+${feat.shap_value.toFixed(3)}` : feat.shap_value.toFixed(3)}
-                                </span>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
+                    {/* Expandable SHAP & Decision Explainability View */}
+                    {isExpanded && (
+                      <ShapExplanationView
+                        alert={alert}
+                        baselineNormalFrame={baselineNormalFrame}
+                      />
                     )}
                   </div>
                 );
