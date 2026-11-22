@@ -12,7 +12,9 @@ plotly>=5.20.0
 # Dashboard (optional)
 streamlit>=1.32.0
 
-# Deep learning
+# Deep learning / ML models
+xgboost>=2.0.0
+shap>=0.44.0
 # Install PyTorch manually from https://pytorch.org/get-started/locally/
 # to match your CUDA version (CPU / CUDA 11.x / CUDA 12.x)
 # Keep these commented to avoid installing a wrong wheel for your hardware.
