@@ -112,8 +112,10 @@ Outputs saved:
 Run the full automated test suite (rules, preprocessing, stream state, parity, SHAP, and accuracy):
 
 ```bash
-pytest tests/ -v
+pytest -q
 ```
+
+> **Note:** Test discovery is configured via `pytest.ini` with `testpaths = tests`, ensuring standalone scripts in `scripts/` (such as `scripts/manual_analyze_api.py`) are excluded from automatic test collection.
 
 All tests should pass.
 
