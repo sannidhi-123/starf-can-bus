@@ -1,11 +1,13 @@
 """Dataset loader for the SynCAN (Synthetic CAN Bus) benchmark.
 
 Provides chunked reading and unified normalization of SynCAN CSV files:
-- Time column (ms) converted to timestamp (seconds)
-- Arbitrary signal counts mapped to s1..s4 with NaN filled with -1.0
-- Signal validity masks s1_valid..s4_valid
-- Binary labels (0 = Normal, 1 = Attack)
-- attack_type mapped from file naming and message labels
+- Header detection: automatically handles files with headers (train_1, test_*)
+  and files without headers (train_2, train_3, train_4) where lines have variable columns.
+- Time column (ms) converted to timestamp (seconds).
+- Arbitrary signal counts mapped to s1..s4 with NaN filled with -1.0.
+- Signal validity masks s1_valid..s4_valid.
+- Binary labels (0 = Normal, 1 = Attack).
+- attack_type mapped from file naming and message labels.
 """
 
 from __future__ import annotations
@@ -32,6 +34,8 @@ SYNCAN_SIGNAL_COUNTS = {
     "id10": 4,
 }
 
+CANONICAL_COLUMNS = ["Label", "Time", "ID", "s1", "s2", "s3", "s4"]
+
 
 def extract_attack_type_from_filename(file_path: Union[str, Path]) -> str:
     """Extract standard SynCAN attack type identifier from a file path."""
@@ -42,6 +46,13 @@ def extract_attack_type_from_filename(file_path: Union[str, Path]) -> str:
     if "normal" in name or "train" in name:
         return "normal"
     return "other"
+
+
+def has_header_row(file_path: Union[str, Path]) -> bool:
+    """Check whether the first line of the CSV file contains header names."""
+    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+        first_line = f.readline().strip().lower()
+    return "time" in first_line or "label" in first_line
 
 
 def load_syncan(
@@ -74,16 +85,28 @@ def load_syncan(
         raise FileNotFoundError(f"SynCAN file not found: {file_path}")
 
     base_attack_type = extract_attack_type_from_filename(file_path)
+    has_header = has_header_row(file_path)
 
     chunks: list[pd.DataFrame] = []
     total_read = 0
 
-    reader = pd.read_csv(
-        file_path,
-        chunksize=chunksize,
-        dtype={"ID": "string"},
-        engine="c",
-    )
+    # For files without header, supply explicit column names to handle variable column count per line
+    if has_header:
+        reader = pd.read_csv(
+            file_path,
+            chunksize=chunksize,
+            dtype={"ID": "string"},
+            engine="c",
+        )
+    else:
+        reader = pd.read_csv(
+            file_path,
+            names=CANONICAL_COLUMNS,
+            header=None,
+            chunksize=chunksize,
+            dtype={"ID": "string"},
+            engine="c",
+        )
 
     for chunk in reader:
         if max_rows is not None and total_read >= max_rows:
@@ -93,10 +116,10 @@ def load_syncan(
             chunk = chunk.iloc[: max_rows - total_read]
 
         # Standardize column names
-        # Raw files vary: Signal1 vs Signal1_of_ID
+        # Raw files vary: Signal1 vs Signal1_of_ID vs s1
         col_map = {}
         for col in chunk.columns:
-            clow = col.lower().strip()
+            clow = str(col).lower().strip()
             if clow == "time":
                 col_map[col] = "Time"
             elif clow in ("id", "can_id"):
