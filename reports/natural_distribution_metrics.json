@@ -1,0 +1,191 @@
+{
+  "date": "2026-11-23T15:33:22.459250+00:00",
+  "random_state": 42,
+  "distribution": {
+    "counts": {
+      "Normal": 40000,
+      "DoS": 1111,
+      "Fuzzy": 1111,
+      "Spoof_Gear": 1111,
+      "Spoof_RPM": 1111
+    },
+    "percentages": {
+      "Normal": 90.0,
+      "DoS": 2.5,
+      "Fuzzy": 2.5,
+      "Spoof_Gear": 2.5,
+      "Spoof_RPM": 2.5
+    },
+    "total_frames": 44444
+  },
+  "xgboost": {
+    "accuracy": 0.99073,
+    "macro_f1": 0.967681,
+    "weighted_f1": 0.991431,
+    "false_positive_rate_normal": 0.0103,
+    "false_alarms_per_100k_normal": 1030.0,
+    "total_normal_frames": 40000,
+    "false_positive_normal_count": 412,
+    "per_class": {
+      "Normal": {
+        "precision": 1.0,
+        "recall": 0.9897,
+        "f1-score": 0.994823,
+        "support": 40000
+      },
+      "DoS": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 1111
+      },
+      "Fuzzy": {
+        "precision": 0.729481,
+        "recall": 1.0,
+        "f1-score": 0.843584,
+        "support": 1111
+      },
+      "Spoof_Gear": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 1111
+      },
+      "Spoof_RPM": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 1111
+      }
+    },
+    "confusion_matrix": [
+      [
+        39588,
+        0,
+        412,
+        0,
+        0
+      ],
+      [
+        0,
+        1111,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        1111,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        1111,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        0,
+        1111
+      ]
+    ],
+    "confusion_matrix_labels": [
+      "Normal",
+      "DoS",
+      "Fuzzy",
+      "Spoof_Gear",
+      "Spoof_RPM"
+    ]
+  },
+  "random_forest": {
+    "accuracy": 0.953852,
+    "macro_f1": 0.898739,
+    "weighted_f1": 0.96432,
+    "false_positive_rate_normal": 0.051275,
+    "false_alarms_per_100k_normal": 5127.5,
+    "total_normal_frames": 40000,
+    "false_positive_normal_count": 2051,
+    "per_class": {
+      "Normal": {
+        "precision": 1.0,
+        "recall": 0.948725,
+        "f1-score": 0.973688,
+        "support": 40000
+      },
+      "DoS": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 1111
+      },
+      "Fuzzy": {
+        "precision": 0.35136,
+        "recall": 1.0,
+        "f1-score": 0.520009,
+        "support": 1111
+      },
+      "Spoof_Gear": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 1111
+      },
+      "Spoof_RPM": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 1111
+      }
+    },
+    "confusion_matrix": [
+      [
+        37949,
+        0,
+        2051,
+        0,
+        0
+      ],
+      [
+        0,
+        1111,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        1111,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        1111,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        0,
+        1111
+      ]
+    ],
+    "confusion_matrix_labels": [
+      "Normal",
+      "DoS",
+      "Fuzzy",
+      "Spoof_Gear",
+      "Spoof_RPM"
+    ]
+  }
+}
