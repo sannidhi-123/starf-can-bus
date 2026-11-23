@@ -1,0 +1,126 @@
+{
+  "date": "2026-11-23T16:33:30.318501+00:00",
+  "model_type": "XGBClassifier",
+  "evaluation_level": "0.5_second_window",
+  "window_rule": ">=50% attack messages -> attack window",
+  "best_params": {
+    "subsample": 0.8,
+    "n_estimators": 300,
+    "min_child_weight": 5,
+    "max_depth": 4,
+    "learning_rate": 0.2,
+    "colsample_bytree": 0.7
+  },
+  "val_macro_f1": 0.7959,
+  "accuracy": 0.946443,
+  "macro_f1": 0.672121,
+  "weighted_f1": 0.93593,
+  "false_positive_rate_normal": 0.010046,
+  "false_alarms_per_1000_normal": 10.0455,
+  "total_normal_windows": 7466,
+  "false_positive_normal_count": 75,
+  "per_class": {
+    "normal": {
+      "precision": 0.95788,
+      "recall": 0.989954,
+      "f1-score": 0.973653,
+      "support": 7466
+    },
+    "continuous": {
+      "precision": 0.684211,
+      "recall": 0.069519,
+      "f1-score": 0.126214,
+      "support": 187
+    },
+    "flooding": {
+      "precision": 0.990566,
+      "recall": 0.995261,
+      "f1-score": 0.992908,
+      "support": 211
+    },
+    "plateau": {
+      "precision": 0.9,
+      "recall": 0.52381,
+      "f1-score": 0.662207,
+      "support": 189
+    },
+    "playback": {
+      "precision": 0.319149,
+      "recall": 0.288462,
+      "f1-score": 0.30303,
+      "support": 156
+    },
+    "suppress": {
+      "precision": 0.950673,
+      "recall": 1.0,
+      "f1-score": 0.974713,
+      "support": 212
+    }
+  },
+  "binary_attack_normal": {
+    "attack_precision": 0.893617,
+    "attack_recall": 0.659686,
+    "attack_f1": 0.759036,
+    "normal_precision": 0.95788,
+    "normal_recall": 0.989954,
+    "normal_f1": 0.973653
+  },
+  "confusion_matrix": [
+    [
+      7391,
+      6,
+      2,
+      6,
+      50,
+      11
+    ],
+    [
+      167,
+      13,
+      0,
+      5,
+      2,
+      0
+    ],
+    [
+      1,
+      0,
+      210,
+      0,
+      0,
+      0
+    ],
+    [
+      46,
+      0,
+      0,
+      99,
+      44,
+      0
+    ],
+    [
+      111,
+      0,
+      0,
+      0,
+      45,
+      0
+    ],
+    [
+      0,
+      0,
+      0,
+      0,
+      0,
+      212
+    ]
+  ],
+  "classes": [
+    "normal",
+    "continuous",
+    "flooding",
+    "plateau",
+    "playback",
+    "suppress"
+  ]
+}
