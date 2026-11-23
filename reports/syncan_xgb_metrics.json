@@ -1,0 +1,199 @@
+{
+  "date": "2026-11-23T16:02:52.303515+00:00",
+  "model_type": "XGBClassifier",
+  "evaluation_note": "Labels are window-tagged: during an attack interval, every message on the CAN bus is marked label=1 regardless of which specific ID is manipulated. Therefore, message-level numbers understate detection quality; 1-second window-level metrics provide the true operational evaluation.",
+  "training": {
+    "candidate_train_rows": 9802058,
+    "subsampling_k": 13,
+    "final_train_rows": 754006,
+    "val_rows": 1993295,
+    "test_rows": 1993305,
+    "training_time_s": 42.46,
+    "total_elapsed_s": 31.93,
+    "best_params": {
+      "subsample": 0.7,
+      "n_estimators": 200,
+      "max_depth": 8,
+      "learning_rate": 0.2,
+      "colsample_bytree": 0.7
+    }
+  },
+  "message_level": {
+    "accuracy": 0.500773,
+    "macro_f1": 0.449381,
+    "weighted_f1": 0.622136,
+    "false_positive_rate_normal": 0.52226,
+    "false_alarms_per_100k_normal": 52225.97,
+    "total_normal_messages": 1708313,
+    "false_positive_normal_count": 892183,
+    "per_class": {
+      "normal": {
+        "precision": 0.93432,
+        "recall": 0.47774,
+        "f1-score": 0.632214,
+        "support": 1708313
+      },
+      "flooding": {
+        "precision": 0.997742,
+        "recall": 0.999312,
+        "f1-score": 0.998526,
+        "support": 111852
+      },
+      "plateau": {
+        "precision": 0.028293,
+        "recall": 0.194387,
+        "f1-score": 0.049397,
+        "support": 45178
+      },
+      "continuous": {
+        "precision": 0.02531,
+        "recall": 0.180519,
+        "f1-score": 0.044395,
+        "support": 44771
+      },
+      "playback": {
+        "precision": 0.026164,
+        "recall": 0.229229,
+        "f1-score": 0.046968,
+        "support": 37312
+      },
+      "suppress": {
+        "precision": 0.877038,
+        "recall": 0.978029,
+        "f1-score": 0.924784,
+        "support": 45879
+      }
+    },
+    "per_attack_recall": {
+      "flooding": 0.999312,
+      "plateau": 0.194387,
+      "continuous": 0.180519,
+      "playback": 0.229229,
+      "suppress": 0.978029
+    },
+    "confusion_matrix": [
+      [
+        816130,
+        253,
+        286636,
+        297554,
+        301476,
+        6264
+      ],
+      [
+        35,
+        111775,
+        12,
+        9,
+        21,
+        0
+      ],
+      [
+        19496,
+        0,
+        8782,
+        6183,
+        10699,
+        18
+      ],
+      [
+        20673,
+        0,
+        9984,
+        8082,
+        6032,
+        0
+      ],
+      [
+        16451,
+        0,
+        4888,
+        7411,
+        8553,
+        9
+      ],
+      [
+        717,
+        0,
+        88,
+        87,
+        116,
+        44871
+      ]
+    ],
+    "confusion_matrix_labels": [
+      "normal",
+      "flooding",
+      "plateau",
+      "continuous",
+      "playback",
+      "suppress"
+    ]
+  },
+  "window_level_1s": {
+    "total_windows": 4058,
+    "normal_windows": 3509,
+    "attack_windows": 549,
+    "macro_f1": 0.361309,
+    "false_positive_rate_normal": 1.0,
+    "false_alarms_per_100k_normal": 100000.0,
+    "normal_window_false_alarms": 3509,
+    "per_attack": {
+      "flooding": {
+        "precision": 0.983193,
+        "recall": 1.0,
+        "f1-score": 0.991525,
+        "fpr": 0.00057,
+        "tp": 117,
+        "fp": 2,
+        "fn": 0,
+        "tn": 3939,
+        "support_windows": 117
+      },
+      "plateau": {
+        "precision": 0.028869,
+        "recall": 1.0,
+        "f1-score": 0.056117,
+        "fpr": 0.99829,
+        "tp": 111,
+        "fp": 3734,
+        "fn": 0,
+        "tn": 213,
+        "support_windows": 111
+      },
+      "continuous": {
+        "precision": 0.027273,
+        "recall": 1.0,
+        "f1-score": 0.053097,
+        "fpr": 0.999715,
+        "tp": 105,
+        "fp": 3745,
+        "fn": 0,
+        "tn": 208,
+        "support_windows": 105
+      },
+      "playback": {
+        "precision": 0.023692,
+        "recall": 1.0,
+        "f1-score": 0.046287,
+        "fpr": 0.996865,
+        "tp": 91,
+        "fp": 3750,
+        "fn": 0,
+        "tn": 217,
+        "support_windows": 91
+      },
+      "suppress": {
+        "precision": 0.495968,
+        "recall": 0.984,
+        "f1-score": 0.659517,
+        "fpr": 0.034198,
+        "tp": 123,
+        "fp": 125,
+        "fn": 2,
+        "tn": 3808,
+        "support_windows": 125
+      }
+    }
+  }
+}
