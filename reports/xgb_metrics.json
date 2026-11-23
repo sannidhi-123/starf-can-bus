@@ -1,0 +1,106 @@
+{
+  "model_type": "XGBClassifier",
+  "date": "2026-11-23T15:08:34.969130+00:00",
+  "accuracy": 0.997935,
+  "macro_f1": 0.997935,
+  "per_class": {
+    "Normal": {
+      "precision": 0.999975,
+      "recall": 0.9897,
+      "f1-score": 0.994811,
+      "support": 40000
+    },
+    "DoS": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1-score": 1.0,
+      "support": 40000
+    },
+    "Fuzzy": {
+      "precision": 0.989805,
+      "recall": 0.999975,
+      "f1-score": 0.994864,
+      "support": 40000
+    },
+    "Spoof_Gear": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1-score": 1.0,
+      "support": 40000
+    },
+    "Spoof_RPM": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1-score": 1.0,
+      "support": 40000
+    }
+  },
+  "confusion_matrix": [
+    [
+      39588,
+      0,
+      412,
+      0,
+      0
+    ],
+    [
+      0,
+      40000,
+      0,
+      0,
+      0
+    ],
+    [
+      1,
+      0,
+      39999,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      0,
+      40000,
+      0
+    ],
+    [
+      0,
+      0,
+      0,
+      0,
+      40000
+    ]
+  ],
+  "confusion_matrix_labels": [
+    "Normal",
+    "DoS",
+    "Fuzzy",
+    "Spoof_Gear",
+    "Spoof_RPM"
+  ],
+  "latency_ms_batch1": 0.798,
+  "latency_ms_batch1000": 4.258,
+  "feature_importances": {
+    "can_id": 0.285162,
+    "id_repetition_count": 0.349275,
+    "inter_arrival_time_delta": 0.088791,
+    "dlc": 0.000629,
+    "d0": 0.057272,
+    "d1": 0.013615,
+    "d2": 0.015084,
+    "d3": 0.006075,
+    "d4": 0.017592,
+    "d5": 0.004699,
+    "d6": 0.010052,
+    "d7": 0.151753
+  },
+  "best_params": {
+    "subsample": 0.7,
+    "n_estimators": 300,
+    "max_depth": 8,
+    "learning_rate": 0.05,
+    "colsample_bytree": 0.8
+  },
+  "training_time_s": 13.6
+}
