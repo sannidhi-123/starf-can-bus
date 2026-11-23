@@ -223,3 +223,7 @@ api_log.txt
 
 # Claude Code artifacts
 .claude/
+
+# SynCAN dataset
+datasets/syncan/raw/
+datasets/syncan/processed/
