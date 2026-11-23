@@ -1,7 +1,7 @@
 {
   "date": "2026-11-23T16:02:52.303515+00:00",
   "model_type": "XGBClassifier",
-  "evaluation_note": "Labels are window-tagged: during an attack interval, every message on the CAN bus is marked label=1 regardless of which specific ID is manipulated. Therefore, message-level numbers understate detection quality; 1-second window-level metrics provide the true operational evaluation.",
+  "evaluation_note": "Per-message labels in SynCAN are window-tagged: every message during an attack interval is marked label=1 regardless of which ID is manipulated. As a result, the per-message XGBoost model cannot distinguish plateau, continuous and playback attacks from normal traffic (message-level precision ~0.03, window false alarm rate ~100%) because normal messages interleaved within attack windows are incorrectly labeled as attacks during training. Fixed time window evaluation (Part C) resolves this by classifying fixed 0.5-second intervals.",
   "training": {
     "candidate_train_rows": 9802058,
     "subsampling_k": 13,
