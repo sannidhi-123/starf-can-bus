@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from pydantic import Field, field_validator
@@ -35,6 +36,8 @@ class Settings(BaseSettings):
     THRESHOLD_PATH: Path = Field(default=PROJECT_ROOT / "models" / "threshold.json")
     MULTICLASS_MODEL_PATH: Path = Field(default=PROJECT_ROOT / "models" / "multiclass_model.pkl")
     MULTICLASS_VECTORIZER_PATH: Path = Field(default=PROJECT_ROOT / "models" / "vectorizer.pkl")
+    XGB_MODEL_PATH: Path = Field(default=PROJECT_ROOT / "models" / "xgb_model.pkl")
+    XGB_META_PATH: Path = Field(default=PROJECT_ROOT / "models" / "xgb_meta.json")
 
     @field_validator(
         "VOCAB_PATH",
@@ -48,6 +51,8 @@ class Settings(BaseSettings):
         "THRESHOLD_PATH",
         "MULTICLASS_MODEL_PATH",
         "MULTICLASS_VECTORIZER_PATH",
+        "XGB_MODEL_PATH",
+        "XGB_META_PATH",
         mode="before",
     )
     @classmethod
@@ -59,6 +64,25 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+# ---------------------------------------------------------------------------
+# MODEL_BACKEND: "xgboost" | "random_forest"
+# Default to xgboost when models/xgb_model.pkl exists, else fall back to RF.
+# ---------------------------------------------------------------------------
+
+def get_model_backend() -> str:
+    """Return 'xgboost' if xgb_model.pkl exists, else 'random_forest'."""
+    if settings.XGB_MODEL_PATH.exists():
+        return "xgboost"
+    logging.getLogger("starf").warning(
+        "XGB model not found at %s — falling back to random_forest",
+        settings.XGB_MODEL_PATH,
+    )
+    return "random_forest"
+
+
+MODEL_BACKEND: str = get_model_backend()
 
 # ---------------------------------------------------------------------------
 # Severity classification (Part B)

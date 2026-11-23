@@ -70,10 +70,12 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _MODELS_DIR   = _PROJECT_ROOT / "models"
 
 _RULES_CONFIG_PATH = _MODELS_DIR / "rules_config.json"
-_MODEL_PATH        = _MODELS_DIR / "multiclass_model.pkl"
+_MODEL_PATH        = _MODELS_DIR / "multiclass_model.pkl"   # RF (default fallback)
+_XGB_MODEL_PATH    = _MODELS_DIR / "xgb_model.pkl"
 _FEATURES_PATH     = _MODELS_DIR / "multiclass_features.json"
 _LABEL_ENC_PATH    = _MODELS_DIR / "multiclass_label_encoder.pkl"
 _META_PATH         = _MODELS_DIR / "multiclass_meta.json"
+_XGB_META_PATH     = _MODELS_DIR / "xgb_meta.json"
 _PREPARED_PATH     = _PROJECT_ROOT / "data" / "prepared.parquet"
 
 _NORMAL_LABEL      = "Normal"
@@ -205,10 +207,30 @@ class HybridPipeline:
         window_n: int = _DEFAULT_WINDOW_N,
     ) -> None:
         rcp = Path(rules_config_path or _RULES_CONFIG_PATH)
-        mp  = Path(model_path        or _MODEL_PATH)
         fp  = Path(features_path     or _FEATURES_PATH)
         lp  = Path(label_enc_path    or _LABEL_ENC_PATH)
-        mtp = Path(meta_path         or _META_PATH)
+
+        # ── Model selection via MODEL_BACKEND ─────────────────────────────
+        if model_path is not None:
+            # Caller explicitly chose a path (used in tests / fallback tests)
+            mp  = Path(model_path)
+            mtp = Path(meta_path or _META_PATH)
+            self._model_backend = "random_forest"
+        else:
+            try:
+                from backend.config import MODEL_BACKEND  # noqa: PLC0415
+                _backend = MODEL_BACKEND
+            except Exception:
+                _backend = "random_forest"
+
+            if _backend == "xgboost" and _XGB_MODEL_PATH.exists():
+                mp  = _XGB_MODEL_PATH
+                mtp = Path(meta_path or _XGB_META_PATH)
+                self._model_backend = "xgboost"
+            else:
+                mp  = _MODEL_PATH
+                mtp = Path(meta_path or _META_PATH)
+                self._model_backend = "random_forest"
 
         missing = [str(p) for p in (rcp, mp, fp, lp) if not p.exists()]
         if missing:
@@ -234,7 +256,7 @@ class HybridPipeline:
         self._classes: List[str] = list(self._label_enc.classes_)
         self._window_n = window_n
 
-        # SHAP explainer (optional)
+        # SHAP explainer (optional — TreeExplainer works for both RF and XGB)
         self._shap_explainer: Optional[Any] = None
         self._shap_feature_names: List[str] = list(self._feature_names)
         self._try_init_shap()
@@ -403,6 +425,7 @@ class HybridPipeline:
                 "ml_prediction": ml_label,
                 "ml_confidence": round(ml_conf, 4),
                 "shap_target_class": ml_label if top_features else None,
+                "model": self._model_backend,
             }
 
         # ── 2. ML path ───────────────────────────────────────────────────
@@ -453,6 +476,7 @@ class HybridPipeline:
             "ml_prediction": ml_label,
             "ml_confidence": round(confidence, 4),
             "shap_target_class": ml_label if top_features else None,
+            "model": self._model_backend,
         }
 
     # ------------------------------------------------------------------

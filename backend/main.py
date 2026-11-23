@@ -836,6 +836,38 @@ async def health() -> Dict[str, Any]:
     }
 
 
+
+
+@app.get('/models')
+async def get_models_info() -> Dict[str, Any]:
+    """Return metrics for both trained models read from reports/*.json.
+
+    Numbers are never hardcoded -- always read from files at request time.
+    Missing files are reported as null rather than raising an error.
+    """
+    reports_dir = MODELS_DIR.parent / 'reports'
+
+    def _load_json(path):
+        try:
+            return json.loads(path.read_text(encoding='utf-8'))
+        except Exception:
+            return None
+
+    xgb_metrics = _load_json(reports_dir / 'xgb_metrics.json')
+    rf_metrics   = _load_json(reports_dir / 'rf_metrics.json')
+
+    try:
+        from backend.config import MODEL_BACKEND
+        active_backend = MODEL_BACKEND
+    except Exception:
+        active_backend = 'random_forest'
+
+    return {
+        'active_model':  active_backend,
+        'xgboost':       xgb_metrics,
+        'random_forest': rf_metrics,
+    }
+
 @app.get("/stats")
 async def get_stats() -> Dict[str, Any]:
     if not (runtime_state.loaded or runtime_state.pipeline_loaded):
